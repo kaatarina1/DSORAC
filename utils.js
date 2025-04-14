@@ -42,7 +42,7 @@ export function parseHeader(fileInput) {
 	};
 }
 
-export async function saveTextureToPNG(imageData, width, height) {
+export async function saveTextureToPNG(imageData, width, height, fileName) {
 	// Step 4: Create a canvas and draw the image data
 	const canvas = document.createElement("canvas");
 	canvas.width = width;
@@ -64,7 +64,7 @@ export async function saveTextureToPNG(imageData, width, height) {
 	const dataURL = canvas.toDataURL("image/png");
 	const a = document.createElement("a");
 	a.href = dataURL;
-	a.download = "capture.png";
+	a.download = fileName;
 	document.body.appendChild(a);
 	a.click();
 	document.body.removeChild(a);

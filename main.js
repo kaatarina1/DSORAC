@@ -5,6 +5,7 @@ import { createLazPerf } from "laz-perf";
 import { parseHeader, saveTextureToPNG } from "./utils.js";
 import { Solver } from "./Solvers.js";
 import { DepthMap } from "./DepthMap.js";
+import { Composer } from "./Composer.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -19,6 +20,9 @@ const format = hasBGRA8unormStorage
 // const imageFormat = "rgba32float";
 const alphaMode = "premultiplied";
 context.configure({ device, format, alphaMode: "premultiplied" });
+
+const composer = new Composer(document, canvas, device, format);
+composer.initializeBackground("./data/sky.jpg")
 
 const randomizationCode = await fetch("randomization.wgsl").then((response) =>
 	response.text()
@@ -521,117 +525,11 @@ document.addEventListener("keydown", async (event) => {
 	if (event.key === "T" || event.key === "t") {
 		console.log("Capturing the current view...");
 
-		// Create a texture to store the captured frame
-		const captureTexture = device.createTexture({
-			size: [canvas.width, canvas.height],
-			usage:
-				GPUTextureUsage.TEXTURE_BINDING |
-				GPUTextureUsage.COPY_SRC |
-				GPUTextureUsage.STORAGE_BINDING |
-				GPUTextureUsage.RENDER_ATTACHMENT,
-			format: format,
-		});
-
-		// Configure a render pass for capture
-		const commandEncoder = device.createCommandEncoder();
-		const renderPass = commandEncoder.beginRenderPass({
-			colorAttachments: [
-				{
-					view: captureTexture.createView(),
-					loadOp: "clear",
-					clearValue: [0, 0, 0, 0], // Black background
-					storeOp: "store",
-				},
-			],
-			depthStencilAttachment: {
-				view: depthTexture.createView(),
-				depthLoadOp: "clear",
-				depthClearValue: 1,
-				depthStoreOp: "discard",
-			},
-		});
-
-		// Render the current frame into the capture texture
-		renderPass.setPipeline(renderingPipeline);
-		renderPass.setBindGroup(1, matrixBindGroup);
-		for (const particleSystem of particleSystems) {
-			renderPass.setBindGroup(0, particleSystem.renderingBindGroup);
-			renderPass.draw(particleSystem.numberOfParticles);
-		}
-		renderPass.end();
-
-		// Copy the texture content into a buffer
-		const outputBuffer = device.createBuffer({
-			size: canvas.width * canvas.height * 4, // 4 bytes per pixel (RGBA)
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-		});
-
-		commandEncoder.copyTextureToBuffer(
-			{
-				texture: captureTexture,
-				mipLevel: 0,
-				origin: { x: 0, y: 0, z: 0 },
-			},
-			{
-				buffer: outputBuffer,
-				bytesPerRow: canvas.width * 4,
-				rowsPerImage: canvas.height,
-			},
-			[canvas.width, canvas.height, 1]
-		);
-
-		// Create texture resources
-		let reconstructionRead = device.createTexture({
-			size: [canvas.width, canvas.height],
-			format: format,
-			usage:
-				GPUTextureUsage.STORAGE_BINDING |
-				GPUTextureUsage.TEXTURE_BINDING |
-				GPUTextureUsage.COPY_DST |
-				GPUTextureUsage.COPY_SRC,
-		});
-
-		commandEncoder.copyTextureToTexture(
-			{
-				texture: captureTexture,
-				mipLevel: 0,
-				origin: { x: 0, y: 0, z: 0 }, // Start copying from the top-left corner
-			},
-			{
-				texture: reconstructionRead,
-				mipLevel: 0,
-				origin: { x: 0, y: 0, z: 0 }, // Copy to the same top-left corner
-			},
-			[canvas.width, canvas.height, 1] // Copy the entire texture
-		);
-
-		// Read the buffer
-		await outputBuffer.mapAsync(GPUMapMode.READ);
-		const arrayBuffer = outputBuffer.getMappedRange();
-		const imageData = new Uint8Array(arrayBuffer);
-
-		// const filteredImage = filterImage(imageData, arrayBuffer);
-
-		saveTextureToPNG(imageData, canvas.width, canvas.height);
-
-		let reconstructionWrite = device.createTexture({
-			size: [canvas.width, canvas.height],
-			format: format,
-			usage:
-				GPUTextureUsage.STORAGE_BINDING |
-				GPUTextureUsage.TEXTURE_BINDING |
-				GPUTextureUsage.COPY_DST |
-				GPUTextureUsage.COPY_SRC,
-		});
-
-		// let solver = new Solver(canvas, device, jacobiaPipeline);
-		// let image = await solver.jacobian(captureTexture, reconstructionRead, reconstructionWrite);
-		// let solver = new Solver(canvas, device, updateRedBlackPipeline);
-		// let image = await solver.sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite);
-		// saveTextureToPNG(image, canvas.width, canvas.height);
+		composer.initializeCompositeTexture();
 
 		let depthMap = new DepthMap(canvas, device, depthTexture);
 		let depthValues = await depthMap.groupDepthIntoBins();
+		depthValues.reverse();
 
 		for (let i = 0; i < depthValues.length; i++) {
 			await renderPointsInDepthRange(
@@ -640,13 +538,42 @@ document.addEventListener("keydown", async (event) => {
 			);
 		}
 
+		const outputBuffer = device.createBuffer({
+            size: canvas.width * canvas.height * 4,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+        });
+
+		const commandEncoder = device.createCommandEncoder();
+        commandEncoder.copyTextureToBuffer(
+            { texture: composer.compositeResult },
+            {
+                buffer: outputBuffer,
+                bytesPerRow: canvas.width * 4,
+                rowsPerImage: canvas.height
+            },
+            [canvas.width, canvas.height, 1]
+        );
+        device.queue.submit([commandEncoder.finish()]);
+        
+        await outputBuffer.mapAsync(GPUMapMode.READ);
+        const arrayBuffer = outputBuffer.getMappedRange();
+        const imageData = new Uint8Array(arrayBuffer);
+        
+        // Save the final composite
+        saveTextureToPNG(imageData, canvas.width, canvas.height, "composite_final.png");
+        
+        outputBuffer.unmap();
+        outputBuffer.destroy();
+        composer.compositeResult.destroy();
+        composer.compositeResult = null;
+
 		// Submit the commands
 		// Cleanup resources
-		outputBuffer.unmap();
-		captureTexture.destroy();
-		reconstructionRead.destroy();
-		reconstructionWrite.destroy();
-		outputBuffer.destroy();
+		// outputBuffer.unmap();
+		// captureTexture.destroy();
+		// reconstructionRead.destroy();
+		// reconstructionWrite.destroy();
+		// outputBuffer.destroy();
 	}
 });
 
@@ -778,13 +705,14 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// const arrayBuffer = outputBuffer.getMappedRange();
 	// const imageData = new Uint8Array(arrayBuffer);
 
-	saveTextureToPNG(image, canvas.width, canvas.height);
+	saveTextureToPNG(image, canvas.width, canvas.height, `depth_layer_${minDepth}_${maxDepth}.png`);
 
-	outputBuffer.unmap();
+	await composer.compositeLayer(image);
+
 	captureTexture.destroy();
 	reconstructionRead.destroy();
 	reconstructionWrite.destroy();
-	outputBuffer.destroy();
+    depthRangeBuffer.destroy();
 }
 
 function frame() {
