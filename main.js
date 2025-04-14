@@ -1,11 +1,11 @@
 // Updated main.js with position padding corrections
-import * as mat4 from "./mat4.js";
-import { PointerController } from "./pointerController.js";
-import { createLazPerf } from "laz-perf";
-import { parseHeader, saveTextureToPNG } from "./utils.js";
-import { Solver } from "./Solvers.js";
-import { DepthMap } from "./DepthMap.js";
-import { Composer } from "./Composer.js";
+import * as mat4 from "./js/mat4.js";
+import { PointerController } from "./js/PointerController.js";
+import { saveTextureToPNG } from "./js/Utils.js";
+import { Solver } from "./js/Solvers.js";
+import { DepthMap } from "./js/DepthMap.js";
+import { Composer } from "./js/Composer.js";
+import { LasLoader } from "./js/LasLoader.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -24,10 +24,10 @@ context.configure({ device, format, alphaMode: "premultiplied" });
 const composer = new Composer(document, canvas, device, format);
 composer.initializeBackground("./data/sky.jpg")
 
-const randomizationCode = await fetch("randomization.wgsl").then((response) =>
+const randomizationCode = await fetch("./shaders/randomization.wgsl").then((response) =>
 	response.text()
 );
-const renderingCode = await fetch("rendering.wgsl").then((response) =>
+const renderingCode = await fetch("./shaders/rendering.wgsl").then((response) =>
 	response.text()
 );
 
@@ -62,30 +62,11 @@ const renderingPipeline = device.createRenderPipeline({
 	layout: "auto",
 });
 
-// const floatRenderingPipeline = device.createRenderPipeline({
-// 	vertex: {
-// 		module: renderingModule,
-// 	},
-// 	fragment: {
-// 		module: renderingModule,
-// 		targets: [{ format: imageFormat }],
-// 	},
-// 	primitive: {
-// 		topology: "point-list",
-// 	},
-// 	depthStencil: {
-// 		depthWriteEnabled: true,
-// 		depthCompare: "less",
-// 		format: "depth32float",
-// 	},
-// 	layout: "auto",
-// });
-
-const jacobiaCode = await fetch("jacobia.wgsl").then((response) =>
+const jacobiaCode = await fetch("./shaders/jacobia.wgsl").then((response) =>
 	response.text()
 );
 
-const updateRedBlackWGSL = await fetch("updateRedBlack.wgsl").then((response) =>
+const updateRedBlackWGSL = await fetch("./shaders/updateRedBlack.wgsl").then((response) =>
 	response.text()
 );
 
@@ -115,106 +96,10 @@ const updateRedBlackPipeline = device.createComputePipeline({
 
 const lasFile = `./data/cropped_filtered_1.las`;
 
-const LazPerf = await createLazPerf({
-	locateFile: (file) => `./node_modules/laz-perf/lib/laz-perf.wasm`,
-});
-const response = await fetch(lasFile);
-const arrayBuffer = await response.arrayBuffer();
-const file = new Uint8Array(arrayBuffer);
-
-const header = parseHeader(file);
-const {
-	pointDataRecordFormat,
-	pointDataRecordLength,
-	pointCount,
-	scale,
-	offset,
-} = header;
-
-console.log("Header Info:", header);
-
-const laszip = new LazPerf.LASZip();
-const dataPtr = LazPerf._malloc(pointDataRecordLength);
-const filePtr = LazPerf._malloc(file.byteLength);
-
-LazPerf.HEAPU8.set(
-	new Uint8Array(file.buffer, file.byteOffset, file.byteLength),
-	filePtr
-);
-
-laszip.open(filePtr, file.byteLength);
-
-const positions = new Float32Array(laszip.getCount() * 3);
-const colors = new Uint32Array(laszip.getCount());
-
-let minX = Infinity,
-	minY = Infinity,
-	minZ = Infinity;
-let maxX = -Infinity,
-	maxY = -Infinity,
-	maxZ = -Infinity;
-
-for (let i = 0; i < laszip.getCount(); ++i) {
-	laszip.getPoint(dataPtr);
-
-	const pointBuffer = new DataView(
-		LazPerf.HEAPU8.buffer,
-		dataPtr,
-		pointDataRecordLength
-	);
-
-	const x = pointBuffer.getInt32(0, true) * scale[0] + offset[0];
-	const y = pointBuffer.getInt32(4, true) * scale[1] + offset[1];
-	const z = pointBuffer.getInt32(8, true) * scale[2] + offset[2];
-
-	// console.log(`Point ${i}: x = ${x}, y = ${y}, z = ${z}`);
-
-	const r = pointBuffer.getUint16(28, true) / 65535;
-	const g = pointBuffer.getUint16(30, true) / 65535;
-	const b = pointBuffer.getUint16(32, true) / 65535;
-
-	minX = Math.min(minX, x);
-	maxX = Math.max(maxX, x);
-	minY = Math.min(minY, y);
-	maxY = Math.max(maxY, y);
-	minZ = Math.min(minZ, z);
-	maxZ = Math.max(maxZ, z);
-
-	positions.set([x, y, z], i * 3);
-	const packedColor =
-		((Math.round(r * 255) & 0xff) << 0) | // Red channel in the least significant byte
-		((Math.round(g * 255) & 0xff) << 8) | // Green channel in the second byte
-		((Math.round(b * 255) & 0xff) << 16) | // Blue channel in the third byte
-		(0xff << 24); // Alpha channel in the most significant byte
-	const unsignedPackedColor = packedColor >>> 0; // Force unsigned 32-bit representation
-	// if (i > 10000 && i < 10010) {
-	// 	console.log(
-	// 		"R: ",
-	// 		Math.round(r * 255),
-	// 		"G: ",
-	// 		Math.round(g * 255),
-	// 		"B: ",
-	// 		Math.round(b * 255)
-	// 	);
-	// 	console.log(`Packed Color: 0x${unsignedPackedColor.toString(16)}`);
-	// }
-	colors.set([unsignedPackedColor], i);
-}
-
-const centerX = (minX + maxX) / 2;
-const centerY = (minY + maxY) / 2;
-const centerZ = (minZ + maxZ) / 2;
-const scaleFactor = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
-
-// Normalize positions to fit [-1, 1] in all axes
-for (let i = 0; i < positions.length; i += 3) {
-	positions[i] = (positions[i] - centerX) / scaleFactor;
-	positions[i + 1] = (positions[i + 1] - centerY) / scaleFactor;
-	positions[i + 2] = (positions[i + 2] - centerZ) / scaleFactor;
-}
-LazPerf._free(filePtr);
-LazPerf._free(dataPtr);
-laszip.delete();
+const lasLoader = new LasLoader(lasFile);
+const lasData = await lasLoader.loadLasData();
+const positions = lasData.positions;
+const colors = lasData.colors;
 
 const numberOfAllParticles = positions.length / 3;
 const maxNumberOfParticlesPerBuffer = 1024 * 1024;
@@ -353,18 +238,11 @@ for (let i = 0; i < numberOfAllParticles / maxNumberOfParticlesPerBuffer; i++) {
 	);
 	device.queue.submit([commandEncoder.finish()]);
 
-	// readParticleBuffer(
-	// 	particleSystem.particleBuffer,
-	// 	stagingBuffer,
-	// 	particleSystem.numberOfParticles
-	// );
+	// readParticleBuffer(stagingBuffer);
 }
 
-async function readParticleBuffer(
-	particleBuffer,
-	stagingBuffer,
-	numberOfParticles
-) {
+// Used for debugging
+async function readParticleBuffer(stagingBuffer) {
 	// Ensure the buffer is mapped for reading
 	await stagingBuffer.mapAsync(GPUMapMode.READ);
 
@@ -468,59 +346,6 @@ pointerController.addEventListener("wheel", (e) => {
 	}
 });
 
-function filterImage(image, data) {
-	// Create a copy of the data to store filtered pixels
-	const filteredData = new Uint8Array(image);
-
-	// Define the kernel size for the filter
-	const kernelSize = 3; // 3x3 kernel
-	const halfKernel = Math.floor(kernelSize / 2);
-
-	// Function to get pixel indices in the 1D array
-	const getPixelIndex = (x, y) => y * x * 4;
-
-	// Loop over each pixel in the image
-	for (let y = halfKernel; y < canvas.height - halfKernel; y++) {
-		for (let x = halfKernel; x < canvas.width - halfKernel; x++) {
-			const currentPixelIndex = getPixelIndex(x, y);
-
-			// Skip pixels with alpha == 0
-			if (image[currentPixelIndex + 3] === 0) continue;
-
-			const neighbors = { r: [], g: [], b: [] };
-
-			for (let ky = -halfKernel; ky <= halfKernel; ky++) {
-				for (let kx = -halfKernel; kx <= halfKernel; kx++) {
-					const neighborIndex = getPixelIndex(x + kx, y + ky);
-
-					// Only consider neighbors with alpha > 0
-					if (image[neighborIndex + 3] !== 0) {
-						neighbors.r.push(image[neighborIndex]);
-						neighbors.g.push(image[neighborIndex + 1]);
-						neighbors.b.push(image[neighborIndex + 2]);
-					}
-				}
-			}
-
-			// Skip pixels with no valid neighbors
-			if (neighbors.r.length === 0) continue;
-
-			neighbors.r.sort((a, b) => a - b);
-			neighbors.g.sort((a, b) => a - b);
-			neighbors.b.sort((a, b) => a - b);
-
-			const medianIndex = Math.floor(neighbors.r.length / 2);
-
-			filteredData[currentPixelIndex] = neighbors.r[medianIndex]; // Red
-			filteredData[currentPixelIndex + 1] = neighbors.g[medianIndex]; // Green
-			filteredData[currentPixelIndex + 2] = neighbors.b[medianIndex]; // Blue
-			filteredData[currentPixelIndex + 3] = image[currentPixelIndex + 3]; // Alpha (unchanged)
-		}
-	}
-
-	return filteredData;
-}
-
 document.addEventListener("keydown", async (event) => {
 	if (event.key === "T" || event.key === "t") {
 		console.log("Capturing the current view...");
@@ -566,14 +391,6 @@ document.addEventListener("keydown", async (event) => {
         outputBuffer.destroy();
         composer.compositeResult.destroy();
         composer.compositeResult = null;
-
-		// Submit the commands
-		// Cleanup resources
-		// outputBuffer.unmap();
-		// captureTexture.destroy();
-		// reconstructionRead.destroy();
-		// reconstructionWrite.destroy();
-		// outputBuffer.destroy();
 	}
 });
 
