@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "dev": "vite"
+  },
+  "dependencies": {
+    "buffer": "^6.0.3",
+    "gl-matrix": "^3.4.3",
+    "las-js": "^3.4.2",
+    "laz-perf": "^0.0.6"
+  },
+  "devDependencies": {
+    "vite": "^6.0.7"
+  }
+}
