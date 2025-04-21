@@ -110,26 +110,97 @@ export class DepthMap {
 	}
 
 	async groupDepthIntoBins() {
+		// Get the raw depth values
 		let depthValues = await this.extractDepthValues();
-		depthValues.sort((a, b) => a - b); // Sort depths in ascending order
-
-		let bins = [];
-		let currentBin = [depthValues[0]];
-		let threshold = 0.1; // Adjust this value for merging nearby depths
-
-		for (let i = 1; i < depthValues.length; i++) {
-			if (depthValues[i] - currentBin[0] < threshold) {
-				currentBin.push(depthValues[i]);
-			} else {
-				bins.push([currentBin[0], currentBin[currentBin.length - 1]]);
-				currentBin = [depthValues[i]];
-			}
+  
+		// Filter out invalid depth values (0 or 1 typically represent invalid measurements)
+		depthValues = depthValues.filter(d => d > 0.001 && d < 0.999);
+		
+		// Find min/max without using spread operator
+		let minDepth = Infinity;
+		let maxDepth = -Infinity;
+		for (let i = 0; i < depthValues.length; i++) {
+		  if (depthValues[i] < minDepth) minDepth = depthValues[i];
+		  if (depthValues[i] > maxDepth) maxDepth = depthValues[i];
 		}
-		if (currentBin.length > 0) {
-			bins.push([currentBin[0], currentBin[currentBin.length - 1]]);
+		
+		// Create a histogram to analyze depth distribution
+		const histogramBins = 100;
+		const binWidth = (maxDepth - minDepth) / histogramBins;
+		
+		// Count frequencies
+		const histogram = new Array(histogramBins).fill(0);
+		for (const depth of depthValues) {
+		  const binIndex = Math.min(
+			Math.floor((depth - minDepth) / binWidth),
+			histogramBins - 1
+		  );
+		  histogram[binIndex]++;
 		}
-
-		console.log("Adaptive depth bins:", bins);
+		
+		// Find peaks in the histogram (areas of high point density)
+		const peaks = [];
+		// Calculate the maximum value in histogram without using Math.max(...) 
+		let maxFrequency = 0;
+		for (let i = 0; i < histogram.length; i++) {
+		  if (histogram[i] > maxFrequency) maxFrequency = histogram[i];
+		}
+		
+		const peakThreshold = maxFrequency * 0.008; // Adjust sensitivity
+		
+		for (let i = 1; i < histogramBins - 1; i++) {
+		  if (histogram[i] > peakThreshold && 
+			  histogram[i] > histogram[i-1] && 
+			  histogram[i] > histogram[i+1]) {
+			// Found a peak
+			const peakDepth = minDepth + (i + 0.5) * binWidth;
+			peaks.push(peakDepth);
+		  }
+		}
+		
+		// If no significant peaks found, fall back to uniform bins
+		if (peaks.length < 2) {
+		  console.log("No significant depth layers detected, using uniform bins");
+		  const numBins = 5; // Fallback to 5 uniform bins
+		  const uniformBins = [];
+		  for (let i = 0; i < numBins; i++) {
+			const start = minDepth + (maxDepth - minDepth) * (i / numBins);
+			const end = minDepth + (maxDepth - minDepth) * ((i + 1) / numBins);
+			uniformBins.push([start, end]);
+		  }
+		  return uniformBins;
+		}
+		
+		// Sort peaks by depth
+		peaks.sort((a, b) => a - b);
+		
+		// Create bins around peaks with adaptive widths
+		const bins = [];
+		for (let i = 0; i < peaks.length; i++) {
+		  const peakDepth = peaks[i];
+		  
+		  // Calculate adaptive width based on distance to neighboring peaks
+		  let binStart, binEnd;
+		  
+		  if (i === 0) {
+			binStart = minDepth;
+			const nextPeak = peaks[i + 1] || maxDepth;
+			binEnd = (peakDepth + nextPeak) / 2;
+		  } else if (i === peaks.length - 1) {
+			const prevPeak = peaks[i - 1];
+			binStart = (prevPeak + peakDepth) / 2;
+			binEnd = maxDepth;
+		  } else {
+			const prevPeak = peaks[i - 1];
+			const nextPeak = peaks[i + 1];
+			binStart = (prevPeak + peakDepth) / 2;
+			binEnd = (peakDepth + nextPeak) / 2;
+		  }
+		  
+		  bins.push([binStart, binEnd]);
+		}
+		
+		console.log("Adaptive depth clusters:", bins);
 		return bins;
 	}
 }
