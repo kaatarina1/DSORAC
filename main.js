@@ -16,7 +16,7 @@ const canvas = document.querySelector("canvas");
 const context = canvas.getContext("webgpu");
 const format = hasBGRA8unormStorage
 	? navigator.gpu.getPreferredCanvasFormat()
-	: "rgba8unorm"; // format za shranjevanje slik rgb 32 float, -> slike shranjevat v pam
+	: "rgba8unorm"; // TODO: format za shranjevanje slik rgb 32 float, -> slike shranjevat v pam
 // const imageFormat = "rgba32float";
 context.configure({ device, format, alphaMode: "premultiplied" });
 
@@ -87,47 +87,47 @@ const lasData = await lasLoader.loadLasData();
 const positions = lasData.positions;
 const colors = lasData.colors;
 
-const numberOfAllParticles = positions.length / 3;
-const maxNumberOfParticlesPerBuffer = 1024 * 1024;
-const particleByteSize = 16;
+const numberOfAllPoints = positions.length / 3;
+const maxNumberOfPointsPerBuffer = 1024 * 1024;
+const pointByteSize = 16;
 
-console.log(numberOfAllParticles);
-console.log(numberOfAllParticles / maxNumberOfParticlesPerBuffer);
+console.log(numberOfAllPoints);
+console.log(numberOfAllPoints / maxNumberOfPointsPerBuffer);
 
-function createParticleSystem(numberOfParticles, count) {
-	if (numberOfParticles > maxNumberOfParticlesPerBuffer) {
-		throw new Error("Too many particles for one particle buffer");
+function createPointCloud(numberOfPoints, count) {
+	if (numberOfPoints > maxNumberOfPointsPerBuffer) {
+		throw new Error("Too many points for one point buffer");
 	}
 
-	const particleBuffer = device.createBuffer({
-		size: numberOfParticles * particleByteSize,
+	const pointBuffer = device.createBuffer({
+		size: numberOfPoints * pointByteSize,
 		usage:
 			GPUBufferUsage.STORAGE |
 			GPUBufferUsage.COPY_DST |
 			GPUBufferUsage.COPY_SRC,
 	});
 
-	// Create a CPU-side particle array
-	const particleData = new ArrayBuffer(numberOfParticles * particleByteSize);
-	const particleDataView = new DataView(particleData);
+	// Create a CPU-side point array
+	const pointData = new ArrayBuffer(numberOfPoints * pointByteSize);
+	const pointDataView = new DataView(pointData);
 
 	// Populate the data with positions and colors
-    let startIndex = count * numberOfParticles;
-    for (let i = 0; i < numberOfParticles; i++) {
+    let startIndex = count * numberOfPoints;
+    for (let i = 0; i < numberOfPoints; i++) {
         const posIndex = (startIndex + i) * 3;
-        const particleOffset = i * particleByteSize;
+        const pointOffset = i * pointByteSize;
         
         // Write position XYZ
-        particleDataView.setFloat32(particleOffset, positions[posIndex], true);
-        particleDataView.setFloat32(particleOffset + 4, positions[posIndex + 1], true);
-        particleDataView.setFloat32(particleOffset + 8, positions[posIndex + 2], true);
+        pointDataView.setFloat32(pointOffset, positions[posIndex], true);
+        pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
         
         // Write color as uint32
-        particleDataView.setUint32(particleOffset + 12, colors[startIndex + i], true);
+        pointDataView.setUint32(pointOffset + 12, colors[startIndex + i], true);
     }
 
-    // Write the particle data directly to the GPU buffer
-    device.queue.writeBuffer(particleBuffer, 0, particleData);
+    // Write the point data directly to the GPU buffer
+    device.queue.writeBuffer(pointBuffer, 0, pointData);
 
 	const uniformBuffer = device.createBuffer({
 		size: 4,
@@ -137,7 +137,7 @@ function createParticleSystem(numberOfParticles, count) {
 	device.queue.writeBuffer(
 		uniformBuffer,
 		0,
-		new Uint32Array([numberOfParticles])
+		new Uint32Array([numberOfPoints])
 	);
 
 	const renderingBindGroup = device.createBindGroup({
@@ -145,47 +145,47 @@ function createParticleSystem(numberOfParticles, count) {
 		entries: [
 			{
 				binding: 0,
-				resource: { buffer: particleBuffer },
+				resource: { buffer: pointBuffer },
 			},
 		],
 	});
 
 	return {
-		particleBuffer,
+		pointBuffer,
 		uniformBuffer,
 		renderingBindGroup,
-		numberOfParticles,
+		numberOfPoints,
 	};
 }
 
-const particleSystems = [];
-for (let i = 0; i < numberOfAllParticles / maxNumberOfParticlesPerBuffer; i++) {
-	const particleSystem = createParticleSystem(
-		numberOfAllParticles > maxNumberOfParticlesPerBuffer
-			? maxNumberOfParticlesPerBuffer
-			: numberOfAllParticles,
+const pointclouds = [];
+for (let i = 0; i < numberOfAllPoints / maxNumberOfPointsPerBuffer; i++) {
+	const pointcloud = createPointCloud(
+		numberOfAllPoints > maxNumberOfPointsPerBuffer
+			? maxNumberOfPointsPerBuffer
+			: numberOfAllPoints,
 		i
 	);
-    particleSystems.push(particleSystem);
+    pointclouds.push(pointcloud);
 	// For debugging if needed
     // const stagingBuffer = device.createBuffer({
-    //     size: particleSystem.numberOfParticles * particleByteSize,
+    //     size: pointcloud.numberOfPoints * pointByteSize,
     //     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     // });
     // const commandEncoder = device.createCommandEncoder();
     // commandEncoder.copyBufferToBuffer(
-    //     particleSystem.particleBuffer, // Source buffer
+    //     pointcloud.pointBuffer, // Source buffer
     //     0, // Source offset
     //     stagingBuffer, // Destination buffer
     //     0, // Destination offset
-    //     particleSystem.numberOfParticles * particleByteSize // Size of data to copy
+    //     pointcloud.numberOfPoints * pointByteSize // Size of data to copy
     // );
     // device.queue.submit([commandEncoder.finish()]);
-    // readParticleBuffer(stagingBuffer);
+    // readPointBuffer(stagingBuffer);
 }
 
 // Used for debugging
-async function readParticleBuffer(stagingBuffer) {
+async function readPointBuffer(stagingBuffer) {
 	// Ensure the buffer is mapped for reading
 	await stagingBuffer.mapAsync(GPUMapMode.READ);
 
@@ -193,17 +193,17 @@ async function readParticleBuffer(stagingBuffer) {
 	const arrayBuffer = stagingBuffer.getMappedRange();
 
 	// Interpret the buffer data
-	const particleData = new DataView(arrayBuffer);
+	const pointData = new DataView(arrayBuffer);
 
 	for (let i = 0; i < 3; i++) {
-		const baseOffset = i * particleByteSize; // Assuming each particle is 24 bytes
-		const x = particleData.getFloat32(baseOffset, true); // Read position.x
-		const y = particleData.getFloat32(baseOffset + 4, true); // Read position.y
-		const z = particleData.getFloat32(baseOffset + 8, true); // Read position.z
-		const color = particleData.getUint32(baseOffset + 12, true); // Read packed color
+		const baseOffset = i * pointByteSize; // Assuming each point is 24 bytes
+		const x = pointData.getFloat32(baseOffset, true); // Read position.x
+		const y = pointData.getFloat32(baseOffset + 4, true); // Read position.y
+		const z = pointData.getFloat32(baseOffset + 8, true); // Read position.z
+		const color = pointData.getUint32(baseOffset + 12, true); // Read packed color
 
 		console.log(
-			`Particle ${i}: Position = (${x}, ${y}, ${z}), Color = 0x${color.toString(
+			`Point ${i}: Position = (${x}, ${y}, ${z}), Color = 0x${color.toString(
 				16
 			)}`
 		);
@@ -397,9 +397,9 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	renderPass.setBindGroup(1, matrixBindGroup);
 	renderPass.setBindGroup(2, depthRangeBindGroup); // Apply depth range filter
 
-	for (const particleSystem of particleSystems) {
-		renderPass.setBindGroup(0, particleSystem.renderingBindGroup);
-		renderPass.draw(particleSystem.numberOfParticles);
+	for (const pointcloud of pointclouds) {
+		renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
+		renderPass.draw(pointcloud.numberOfPoints);
 	}
 
 	renderPass.end();
@@ -561,9 +561,9 @@ function frame() {
 	renderPass.setBindGroup(1, matrixBindGroup);
 	renderPass.setBindGroup(2, depthRangeBindGroup); // Apply depth range filter
 
-	for (const particleSystem of particleSystems) {
-		renderPass.setBindGroup(0, particleSystem.renderingBindGroup);
-		renderPass.draw(particleSystem.numberOfParticles);
+	for (const pointcloud of pointclouds) {
+		renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
+		renderPass.draw(pointcloud.numberOfPoints);
 	}
 	renderPass.end();
 
