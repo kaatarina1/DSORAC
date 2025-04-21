@@ -18,30 +18,16 @@ const format = hasBGRA8unormStorage
 	? navigator.gpu.getPreferredCanvasFormat()
 	: "rgba8unorm"; // format za shranjevanje slik rgb 32 float, -> slike shranjevat v pam
 // const imageFormat = "rgba32float";
-const alphaMode = "premultiplied";
 context.configure({ device, format, alphaMode: "premultiplied" });
 
 const composer = new Composer(document, canvas, device, format);
-composer.initializeBackground("./data/sky.jpg")
+composer.initializeBackground("./data/sky.jpg");
 
-const randomizationCode = await fetch("./shaders/randomization.wgsl").then((response) =>
-	response.text()
-);
 const renderingCode = await fetch("./shaders/rendering.wgsl").then((response) =>
 	response.text()
 );
 
-const randomizationModule = device.createShaderModule({
-	code: randomizationCode,
-});
 const renderingModule = device.createShaderModule({ code: renderingCode });
-
-const randomizationPipeline = device.createComputePipeline({
-	compute: {
-		module: randomizationModule,
-	},
-	layout: "auto",
-});
 
 const renderingPipeline = device.createRenderPipeline({
 	vertex: {
@@ -66,8 +52,8 @@ const jacobiaCode = await fetch("./shaders/jacobia.wgsl").then((response) =>
 	response.text()
 );
 
-const updateRedBlackWGSL = await fetch("./shaders/updateRedBlack.wgsl").then((response) =>
-	response.text()
+const updateRedBlackWGSL = await fetch("./shaders/updateRedBlack.wgsl").then(
+	(response) => response.text()
 );
 
 const jacobiaModule = device.createShaderModule({
@@ -113,24 +99,6 @@ function createParticleSystem(numberOfParticles, count) {
 		throw new Error("Too many particles for one particle buffer");
 	}
 
-	const paddedPositions = new Float32Array(numberOfParticles * 4);
-	const splitColors = new Uint32Array(numberOfParticles);
-	let index = 0;
-	let colorIndex = count * numberOfParticles;
-	for (
-		let i = count * numberOfParticles;
-		i < (count + 1) * numberOfParticles;
-		i++
-	) {
-		paddedPositions[index * 4 + 0] = positions[i * 3 + 0];
-		paddedPositions[index * 4 + 1] = positions[i * 3 + 1];
-		paddedPositions[index * 4 + 2] = positions[i * 3 + 2];
-		paddedPositions[index * 4 + 3] = 0.0; // Padding
-		splitColors[index] = colors[colorIndex];
-		index++;
-		colorIndex++;
-	}
-
 	const particleBuffer = device.createBuffer({
 		size: numberOfParticles * particleByteSize,
 		usage:
@@ -138,6 +106,28 @@ function createParticleSystem(numberOfParticles, count) {
 			GPUBufferUsage.COPY_DST |
 			GPUBufferUsage.COPY_SRC,
 	});
+
+	// Create a CPU-side particle array
+	const particleData = new ArrayBuffer(numberOfParticles * particleByteSize);
+	const particleDataView = new DataView(particleData);
+
+	// Populate the data with positions and colors
+    let startIndex = count * numberOfParticles;
+    for (let i = 0; i < numberOfParticles; i++) {
+        const posIndex = (startIndex + i) * 3;
+        const particleOffset = i * particleByteSize;
+        
+        // Write position XYZ
+        particleDataView.setFloat32(particleOffset, positions[posIndex], true);
+        particleDataView.setFloat32(particleOffset + 4, positions[posIndex + 1], true);
+        particleDataView.setFloat32(particleOffset + 8, positions[posIndex + 2], true);
+        
+        // Write color as uint32
+        particleDataView.setUint32(particleOffset + 12, colors[startIndex + i], true);
+    }
+
+    // Write the particle data directly to the GPU buffer
+    device.queue.writeBuffer(particleBuffer, 0, particleData);
 
 	const uniformBuffer = device.createBuffer({
 		size: 4,
@@ -149,32 +139,6 @@ function createParticleSystem(numberOfParticles, count) {
 		0,
 		new Uint32Array([numberOfParticles])
 	);
-
-	// Create GPU buffers for positions and colors
-	const positionsBuffer = device.createBuffer({
-		size: paddedPositions.byteLength,
-		usage:
-			GPUBufferUsage.STORAGE |
-			GPUBufferUsage.COPY_DST |
-			GPUBufferUsage.COPY_SRC,
-	});
-	device.queue.writeBuffer(positionsBuffer, 0, paddedPositions);
-
-	const colorsBuffer = device.createBuffer({
-		size: splitColors.byteLength,
-		usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-	});
-	device.queue.writeBuffer(colorsBuffer, 0, splitColors);
-
-	const randomizationBindGroup = device.createBindGroup({
-		layout: randomizationPipeline.getBindGroupLayout(0),
-		entries: [
-			{ binding: 0, resource: { buffer: positionsBuffer } },
-			{ binding: 1, resource: { buffer: colorsBuffer } },
-			{ binding: 2, resource: { buffer: particleBuffer } },
-			{ binding: 3, resource: { buffer: uniformBuffer } },
-		],
-	});
 
 	const renderingBindGroup = device.createBindGroup({
 		layout: renderingPipeline.getBindGroupLayout(0),
@@ -189,28 +153,9 @@ function createParticleSystem(numberOfParticles, count) {
 	return {
 		particleBuffer,
 		uniformBuffer,
-		positionsBuffer,
-		colorsBuffer,
-		randomizationBindGroup,
 		renderingBindGroup,
 		numberOfParticles,
 	};
-}
-
-function randomizeParticles(particleSystem) {
-	const commandEncoder = device.createCommandEncoder();
-
-	const computePass = commandEncoder.beginComputePass();
-	computePass.setPipeline(randomizationPipeline);
-	computePass.setBindGroup(0, particleSystem.randomizationBindGroup);
-	const numberOfWorkgroups = Math.ceil(
-		particleSystem.numberOfParticles / 256
-	);
-	computePass.dispatchWorkgroups(numberOfWorkgroups);
-
-	computePass.end();
-
-	device.queue.submit([commandEncoder.finish()]);
 }
 
 const particleSystems = [];
@@ -221,24 +166,22 @@ for (let i = 0; i < numberOfAllParticles / maxNumberOfParticlesPerBuffer; i++) {
 			: numberOfAllParticles,
 		i
 	);
-	randomizeParticles(particleSystem);
-	particleSystems.push(particleSystem);
-
-	const stagingBuffer = device.createBuffer({
-		size: particleSystem.numberOfParticles * particleByteSize,
-		usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-	});
-	const commandEncoder = device.createCommandEncoder();
-	commandEncoder.copyBufferToBuffer(
-		particleSystem.particleBuffer, // Source buffer
-		0, // Source offset
-		stagingBuffer, // Destination buffer
-		0, // Destination offset
-		particleSystem.numberOfParticles * particleByteSize // Size of data to copy
-	);
-	device.queue.submit([commandEncoder.finish()]);
-
-	// readParticleBuffer(stagingBuffer);
+    particleSystems.push(particleSystem);
+	// For debugging if needed
+    // const stagingBuffer = device.createBuffer({
+    //     size: particleSystem.numberOfParticles * particleByteSize,
+    //     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    // });
+    // const commandEncoder = device.createCommandEncoder();
+    // commandEncoder.copyBufferToBuffer(
+    //     particleSystem.particleBuffer, // Source buffer
+    //     0, // Source offset
+    //     stagingBuffer, // Destination buffer
+    //     0, // Destination offset
+    //     particleSystem.numberOfParticles * particleByteSize // Size of data to copy
+    // );
+    // device.queue.submit([commandEncoder.finish()]);
+    // readParticleBuffer(stagingBuffer);
 }
 
 // Used for debugging
@@ -348,6 +291,7 @@ pointerController.addEventListener("wheel", (e) => {
 
 document.addEventListener("keydown", async (event) => {
 	if (event.key === "T" || event.key === "t") {
+		const startTime = performance.now();
 		console.log("Capturing the current view...");
 
 		composer.initializeCompositeTexture();
@@ -364,33 +308,39 @@ document.addEventListener("keydown", async (event) => {
 		}
 
 		const outputBuffer = device.createBuffer({
-            size: canvas.width * canvas.height * 4,
-            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-        });
+			size: canvas.width * canvas.height * 4,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
 
 		const commandEncoder = device.createCommandEncoder();
-        commandEncoder.copyTextureToBuffer(
-            { texture: composer.compositeResult },
-            {
-                buffer: outputBuffer,
-                bytesPerRow: canvas.width * 4,
-                rowsPerImage: canvas.height
-            },
-            [canvas.width, canvas.height, 1]
-        );
-        device.queue.submit([commandEncoder.finish()]);
-        
-        await outputBuffer.mapAsync(GPUMapMode.READ);
-        const arrayBuffer = outputBuffer.getMappedRange();
-        const imageData = new Uint8Array(arrayBuffer);
-        
-        // Save the final composite
-        saveTextureToPNG(imageData, canvas.width, canvas.height, "composite_final.png");
-        
-        outputBuffer.unmap();
-        outputBuffer.destroy();
-        composer.compositeResult.destroy();
-        composer.compositeResult = null;
+		commandEncoder.copyTextureToBuffer(
+			{ texture: composer.compositeResult },
+			{
+				buffer: outputBuffer,
+				bytesPerRow: canvas.width * 4,
+				rowsPerImage: canvas.height,
+			},
+			[canvas.width, canvas.height, 1]
+		);
+		device.queue.submit([commandEncoder.finish()]);
+
+		await outputBuffer.mapAsync(GPUMapMode.READ);
+		const arrayBuffer = outputBuffer.getMappedRange();
+		const imageData = new Uint8Array(arrayBuffer);
+
+		// Save the final composite
+		saveTextureToPNG(
+			imageData,
+			canvas.width,
+			canvas.height,
+			"composite_final.png"
+		);
+		outputBuffer.unmap();
+		outputBuffer.destroy();
+		composer.compositeResult.destroy();
+		composer.compositeResult = null;
+		const endTime = performance.now();
+		console.log(`Composite completed in ${endTime - startTime} ms`);
 	}
 });
 
@@ -522,14 +472,19 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// const arrayBuffer = outputBuffer.getMappedRange();
 	// const imageData = new Uint8Array(arrayBuffer);
 
-	saveTextureToPNG(image, canvas.width, canvas.height, `depth_layer_${minDepth}_${maxDepth}.png`);
+	saveTextureToPNG(
+		image,
+		canvas.width,
+		canvas.height,
+		`depth_layer_${minDepth}_${maxDepth}.png`
+	);
 
 	await composer.compositeLayer(image);
 
 	captureTexture.destroy();
 	reconstructionRead.destroy();
 	reconstructionWrite.destroy();
-    depthRangeBuffer.destroy();
+	depthRangeBuffer.destroy();
 }
 
 function frame() {
