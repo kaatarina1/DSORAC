@@ -48,38 +48,6 @@ const renderingPipeline = device.createRenderPipeline({
 	layout: "auto",
 });
 
-const jacobiaCode = await fetch("./shaders/jacobia.wgsl").then((response) =>
-	response.text()
-);
-
-const updateRedBlackWGSL = await fetch("./shaders/updateRedBlack.wgsl").then(
-	(response) => response.text()
-);
-
-const jacobiaModule = device.createShaderModule({
-	code: jacobiaCode,
-});
-
-const jacobiaPipeline = device.createComputePipeline({
-	compute: {
-		module: jacobiaModule,
-		entryPoint: "main",
-	},
-	layout: "auto",
-});
-
-const updateRedBlackModule = device.createShaderModule({
-	code: updateRedBlackWGSL,
-});
-
-const updateRedBlackPipeline = device.createComputePipeline({
-	layout: "auto",
-	compute: {
-		module: updateRedBlackModule,
-		entryPoint: "main",
-	},
-});
-
 const lasFile = `./data/cropped_filtered_1.las`;
 
 const lasLoader = new LasLoader(lasFile);
@@ -301,6 +269,7 @@ document.addEventListener("keydown", async (event) => {
 		depthValues.reverse();
 
 		for (let i = 0; i < depthValues.length; i++) {
+			console.log(i);
 			await renderPointsInDepthRange(
 				depthValues[i][0],
 				depthValues[i][1]
@@ -329,7 +298,7 @@ document.addEventListener("keydown", async (event) => {
 		const imageData = new Uint8Array(arrayBuffer);
 
 		// Save the final composite
-		saveTextureToPNG(
+		await saveTextureToPNG(
 			imageData,
 			canvas.width,
 			canvas.height,
@@ -460,8 +429,8 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	});
 	device.queue.submit([commandEncoder.finish()]);
 
-	let solver = new Solver(canvas, device, jacobiaPipeline);
-	let image = await solver.jacobian(
+	let solver = new Solver(canvas, device);
+	let image = await solver.sorRedBlack(
 		captureTexture,
 		reconstructionRead,
 		reconstructionWrite
@@ -472,7 +441,7 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// const arrayBuffer = outputBuffer.getMappedRange();
 	// const imageData = new Uint8Array(arrayBuffer);
 
-	saveTextureToPNG(
+	await saveTextureToPNG(
 		image,
 		canvas.width,
 		canvas.height,

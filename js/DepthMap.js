@@ -176,6 +176,11 @@ export class DepthMap {
 		
 		// Create bins around peaks with adaptive widths
 		const bins = [];
+
+		// Add initial bin from 0 to first peak's lower bound
+		const firstPeakLowerBound = Math.max(0, (peaks[0] + (peaks[1] || maxDepth)) / 2);
+		bins.push([0, firstPeakLowerBound]);
+
 		for (let i = 0; i < peaks.length; i++) {
 		  const peakDepth = peaks[i];
 		  
@@ -199,6 +204,10 @@ export class DepthMap {
 		  
 		  bins.push([binStart, binEnd]);
 		}
+
+		// Add final bin from last peak's upper bound to 1
+		const lastPeakUpperBound = Math.min(1, (peaks[peaks.length - 1] + (peaks[peaks.length - 2] || minDepth)) / 2);
+		bins.push([lastPeakUpperBound, 1]);
 		
 		console.log("Adaptive depth clusters:", bins);
 		return bins;
