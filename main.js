@@ -6,6 +6,7 @@ import { Solver } from "./js/Solvers.js";
 import { DepthMap } from "./js/DepthMap.js";
 import { Composer } from "./js/Composer.js";
 import { LasLoader } from "./js/LasLoader.js";
+import { MultigridSolver } from "./js/MultigridSolver.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -429,12 +430,15 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	});
 	device.queue.submit([commandEncoder.finish()]);
 
-	let solver = new Solver(canvas, device);
-	let image = await solver.sorRedBlack(
-		captureTexture,
-		reconstructionRead,
-		reconstructionWrite
-	);
+	// let solver = new Solver(canvas, device);
+	// let image = await solver.sorWithResidual(
+	// 	captureTexture,
+	// 	reconstructionRead,
+	// 	reconstructionWrite
+	// );
+
+	let multigridSolver = new MultigridSolver(canvas, device);
+	let image = await multigridSolver.multigridSolve(captureTexture);
 
 	// Read the buffer
 	// await outputBuffer.mapAsync(GPUMapMode.READ);
