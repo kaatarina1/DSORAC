@@ -130,7 +130,7 @@ export class Solver {
 		return jacobianImage;
 	}
 
-	async sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite) {
+	async sorWithResidual(captureTexture, reconstructionRead, reconstructionWrite) {
 		this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
 		this.residualPipeline = await this.createResidualPipeline();
 		const tolerance = 1e-5;
@@ -273,6 +273,102 @@ export class Solver {
         redBlackBuffer.destroy();
         omegaBuffer.destroy();
 
+        return resultImage;
+    }
+
+    async sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite) {
+        this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
+        const omega = 1.9;
+    
+        // Create buffer for red-black control
+        const redBlackBuffer = this.device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+    
+        // Create buffer for omega value
+        const omegaBuffer = this.device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        this.device.queue.writeBuffer(omegaBuffer, 0, new Float32Array([omega]));
+    
+        for (let iteration = 0; iteration < this.maxIterations; iteration++) {
+            // Alternate between red and black phases
+            for (let color = 0; color < 2; color++) {
+                this.device.queue.writeBuffer(
+                    redBlackBuffer,
+                    0,
+                    new Uint32Array([color % 2])
+                );
+    
+                const commandEncoder = this.device.createCommandEncoder();
+                
+                // SOR update pass
+                const updateBindGroup = this.device.createBindGroup({
+                    layout: this.updateRedBlackPipeline.getBindGroupLayout(0),
+                    entries: [
+                        { binding: 0, resource: captureTexture.createView() },
+                        { binding: 1, resource: reconstructionRead.createView() },
+                        { binding: 2, resource: reconstructionWrite.createView() },
+                        { binding: 3, resource: { buffer: redBlackBuffer } },
+                        { binding: 4, resource: { buffer: omegaBuffer } }
+                    ],
+                });
+    
+                const updatePass = commandEncoder.beginComputePass();
+                updatePass.setPipeline(this.updateRedBlackPipeline);
+                updatePass.setBindGroup(0, updateBindGroup);
+                updatePass.dispatchWorkgroups(
+                    Math.ceil(this.width / 8),
+                    Math.ceil(this.height / 8)
+                );
+                updatePass.end();
+    
+                this.device.queue.submit([commandEncoder.finish()]);
+    
+                // Swap textures for next iteration
+                [reconstructionRead, reconstructionWrite] = [
+                    reconstructionWrite,
+                    reconstructionRead,
+                ];
+            }
+    
+            // Optional: Add progress logging
+            if (iteration % 100 === 0) {
+                console.log(`Completed ${iteration} iterations`);
+            }
+        }
+    
+        // Return final result
+        const outputBuffer = this.device.createBuffer({
+            size: this.width * this.height * 4,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+    
+        const commandEncoder = this.device.createCommandEncoder();
+        commandEncoder.copyTextureToBuffer(
+            {
+                texture: reconstructionRead,
+                mipLevel: 0,
+                origin: { x: 0, y: 0, z: 0 },
+            },
+            {
+                buffer: outputBuffer,
+                bytesPerRow: this.width * 4,
+                rowsPerImage: this.height,
+            },
+            [this.width, this.height, 1]
+        );
+    
+        this.device.queue.submit([commandEncoder.finish()]);
+        await this.device.queue.onSubmittedWorkDone();
+    
+        await outputBuffer.mapAsync(GPUMapMode.READ);
+        const arrayBuffer = outputBuffer.getMappedRange();
+        const resultImage = new Uint8Array(arrayBuffer.slice(0));
+        outputBuffer.unmap();
+    
         return resultImage;
     }
 
