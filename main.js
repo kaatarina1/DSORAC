@@ -1,12 +1,13 @@
 // Updated main.js with position padding corrections
 import * as mat4 from "./js/mat4.js";
 import { PointerController } from "./js/PointerController.js";
-import { saveTextureToPNG } from "./js/Utils.js";
+import { saveTextureToPNG, convertTexture } from "./js/Utils.js";
 import { Solver } from "./js/Solvers.js";
 import { DepthMap } from "./js/DepthMap.js";
 import { Composer } from "./js/Composer.js";
 import { LasLoader } from "./js/LasLoader.js";
 import { MultigridSolver } from "./js/MultigridSolver.js";
+import { ConjugateGradientSolver } from "./js/ConjugateGradientSolver.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -210,11 +211,11 @@ let depthTexture = device.createTexture({
 
 let lastSize = { width: null, height: null };
 
-let horizontalAngle = 0; // Angle for horizontal rotation (around Z-axis)
-let verticalAngle = 0; // Angle for vertical rotation (around X-axis)
-let moveX = 0; // Left-right movement
-let moveY = 0; // Up-down movement
-let zoomFactor = 1.2; // Default zoom factor
+let horizontalAngle = 1.12; // Angle for horizontal rotation (around Z-axis)
+let verticalAngle = -1.6; // Angle for vertical rotation (around X-axis)
+let moveX = 0.09; // Left-right movement
+let moveY = 0.12; // Up-down movement
+let zoomFactor = 3.0; // Default zoom factor
 
 const pointerController = new PointerController();
 
@@ -276,6 +277,11 @@ document.addEventListener("keydown", async (event) => {
 				depthValues[i][1]
 			);
 		}
+
+		// await renderPointsInDepthRange(
+		// 	0,
+		// 	1
+		// );
 
 		const outputBuffer = device.createBuffer({
 			size: canvas.width * canvas.height * 4,
@@ -397,31 +403,19 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// Create texture resources
 	let reconstructionRead = device.createTexture({
 		size: [canvas.width, canvas.height],
-		format: format,
+		format: 'rgba32float',
 		usage:
 			GPUTextureUsage.STORAGE_BINDING |
 			GPUTextureUsage.TEXTURE_BINDING |
 			GPUTextureUsage.COPY_DST |
 			GPUTextureUsage.COPY_SRC,
 	});
-
-	commandEncoder.copyTextureToTexture(
-		{
-			texture: captureTexture,
-			mipLevel: 0,
-			origin: { x: 0, y: 0, z: 0 }, // Start copying from the top-left corner
-		},
-		{
-			texture: reconstructionRead,
-			mipLevel: 0,
-			origin: { x: 0, y: 0, z: 0 }, // Copy to the same top-left corner
-		},
-		[canvas.width, canvas.height, 1] // Copy the entire texture
-	);
+	
+	await convertTexture(device, canvas.width, canvas.height, captureTexture, reconstructionRead);
 
 	let reconstructionWrite = device.createTexture({
 		size: [canvas.width, canvas.height],
-		format: format,
+		format: 'rgba32float',
 		usage:
 			GPUTextureUsage.STORAGE_BINDING |
 			GPUTextureUsage.TEXTURE_BINDING |
@@ -429,6 +423,18 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 			GPUTextureUsage.COPY_SRC,
 	});
 	device.queue.submit([commandEncoder.finish()]);
+
+	// Read the buffer
+	await outputBuffer.mapAsync(GPUMapMode.READ);
+	const arrayBuffer = outputBuffer.getMappedRange();
+	const imageData = new Uint8Array(arrayBuffer);
+
+	await saveTextureToPNG(
+		imageData,
+		canvas.width,
+		canvas.height,
+		`orig_depth_layer_${minDepth}_${maxDepth}.png`
+	);
 
 	// let solver = new Solver(canvas, device);
 	// let image = await solver.sorWithResidual(
@@ -440,10 +446,8 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	let multigridSolver = new MultigridSolver(canvas, device);
 	let image = await multigridSolver.multigridSolve(captureTexture);
 
-	// Read the buffer
-	// await outputBuffer.mapAsync(GPUMapMode.READ);
-	// const arrayBuffer = outputBuffer.getMappedRange();
-	// const imageData = new Uint8Array(arrayBuffer);
+	// let cgSolver = new ConjugateGradientSolver(canvas, device);
+	// let image = await cgSolver.conjGradientSolve(captureTexture, reconstructionRead, reconstructionWrite);
 
 	await saveTextureToPNG(
 		image,

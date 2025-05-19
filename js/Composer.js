@@ -59,7 +59,7 @@ export class Composer {
                             // Simple alpha blending: dst = src * srcAlpha + dst * (1 - srcAlpha)
                             return vec4f(
                                 foreground.rgb * foreground.a + background.rgb * (1.0 - foreground.a),
-                                max(foreground.a, background.a)
+                                foreground.a + background.a * (1.0 - foreground.a)
                             );
                         }
                     `;

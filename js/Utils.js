@@ -69,3 +69,36 @@ export async function saveTextureToPNG(imageData, width, height, fileName) {
 	a.click();
 	document.body.removeChild(a);
 }
+
+async function createConversionPipeline(device) {
+    const convertCode = await fetch("./shaders/convert.wgsl").then((res) => res.text());
+    const convertModule = device.createShaderModule({ code: convertCode });
+    return device.createComputePipeline({
+        compute: { module: convertModule, entryPoint: "main" },
+        layout: "auto",
+    });
+}
+
+export async function convertTexture(device, width, height, sourceTexture, targetTexture) {
+    const conversionPipeline = await createConversionPipeline(device);
+    const commandEncoder = device.createCommandEncoder();
+    
+    const bindGroup = device.createBindGroup({
+        layout: conversionPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: sourceTexture.createView() },
+            { binding: 1, resource: targetTexture.createView() },
+        ],
+    });
+
+    const pass = commandEncoder.beginComputePass();
+    pass.setPipeline(conversionPipeline);
+    pass.setBindGroup(0, bindGroup);
+    pass.dispatchWorkgroups(
+        Math.ceil(width / 8),
+        Math.ceil(height / 8)
+    );
+    pass.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+}

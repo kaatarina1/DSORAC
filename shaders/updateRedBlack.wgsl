@@ -1,6 +1,6 @@
 @group(0) @binding(0) var uCapture: texture_2d<f32>;
 @group(0) @binding(1) var uReconstruction: texture_2d<f32>;
-@group(0) @binding(2) var oReconstruction: texture_storage_2d<bgra8unorm, write>;
+@group(0) @binding(2) var oReconstruction: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(3) var<uniform> uRedBlack: u32;
 @group(0) @binding(4) var<uniform> uOmega: f32;
 
@@ -24,7 +24,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     
     let isRed = (global_id.x + global_id.y) % 2u == 0u;
     
-    // This matches the WebGL's "isRed ^^ uRedBlack" logic
     if ((uRedBlack == 0u && !isRed) || (uRedBlack == 1u && isRed)) {
         textureStore(oReconstruction, pos, c);
         return;

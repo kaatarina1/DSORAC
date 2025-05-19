@@ -95,7 +95,7 @@ export class Solver {
 		}
 
 		const jacobiaOutputBuffer = this.device.createBuffer({
-			size: this.width * this.height * 4, // 4 bytes per pixel (RGBA)
+			size: this.width * this.height * 16, // 4 bytes per pixel (RGBA)
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
 		});
 
@@ -107,7 +107,7 @@ export class Solver {
 			},
 			{
 				buffer: jacobiaOutputBuffer,
-				bytesPerRow: this.width * 4,
+				bytesPerRow: this.width * 16,
 				rowsPerImage: this.height,
 			},
 			[this.width, this.height, 1]
@@ -119,7 +119,19 @@ export class Solver {
 		// Read back and save the Jacobian results
 		await jacobiaOutputBuffer.mapAsync(GPUMapMode.READ);
 		const jacobiaArrayBuffer = jacobiaOutputBuffer.getMappedRange();
-		const jacobianImage = new Uint8Array(jacobiaArrayBuffer.slice(0));
+		const floatData = new Float32Array(jacobiaArrayBuffer.slice(0));
+
+        // Convert to Uint8Array for display (optional)
+        const jacobianImage = new Uint8Array(this.width * this.height * 4);
+        for (let i = 0; i < floatData.length; i += 4) {
+            // Simple normalization for display
+            jacobianImage[i] = Math.max(0, Math.min(255, floatData[i+2] * 255));
+            jacobianImage[i+1] = Math.max(0, Math.min(255, floatData[i+1] * 255));
+            jacobianImage[i+2] = Math.max(0, Math.min(255, floatData[i] * 255)); 
+            jacobianImage[i+3] = Math.max(0, Math.min(255, floatData[i+3] * 255));
+        }
+
+        jacobiaOutputBuffer.unmap();
 
 		console.log("Expected buffer size:", this.width * this.height * 4);
 		console.log("Actual buffer size:", jacobiaOutputBuffer.size);
@@ -134,7 +146,7 @@ export class Solver {
 		this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
 		this.residualPipeline = await this.createResidualPipeline();
 		const tolerance = 1e-5;
-        const omega = 1.5;
+        const omega = 1.9;
         // Create textures for residuals
         const residualTexture = this.device.createTexture({
             size: [this.width, this.height],
@@ -241,7 +253,7 @@ export class Solver {
         
         // Return final result
         const outputBuffer = this.device.createBuffer({
-            size: this.width * this.height * 4,
+            size: this.width * this.height * 16,
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
 
@@ -254,7 +266,7 @@ export class Solver {
             },
             {
                 buffer: outputBuffer,
-                bytesPerRow: this.width * 4,
+                bytesPerRow: this.width * 16,
                 rowsPerImage: this.height,
             },
             [this.width, this.height, 1]
@@ -265,7 +277,18 @@ export class Solver {
 
         await outputBuffer.mapAsync(GPUMapMode.READ);
         const arrayBuffer = outputBuffer.getMappedRange();
-        const resultImage = new Uint8Array(arrayBuffer.slice(0));
+        const floatData = new Float32Array(arrayBuffer.slice(0));
+
+        // Convert to Uint8Array for display (optional)
+        const resultImage = new Uint8Array(this.width * this.height * 4);
+        for (let i = 0; i < floatData.length; i += 4) {
+            // Simple normalization for display
+            resultImage[i] = Math.max(0, Math.min(255, floatData[i+2] * 255));
+            resultImage[i+1] = Math.max(0, Math.min(255, floatData[i+1] * 255));
+            resultImage[i+2] = Math.max(0, Math.min(255, floatData[i] * 255)); 
+            resultImage[i+3] = Math.max(0, Math.min(255, floatData[i+3] * 255));
+        }
+
         outputBuffer.unmap();
 
         residualTexture.destroy();
@@ -342,7 +365,7 @@ export class Solver {
     
         // Return final result
         const outputBuffer = this.device.createBuffer({
-            size: this.width * this.height * 4,
+            size: this.width * this.height * 16,
             usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
         });
     
@@ -355,7 +378,7 @@ export class Solver {
             },
             {
                 buffer: outputBuffer,
-                bytesPerRow: this.width * 4,
+                bytesPerRow: this.width * 16,
                 rowsPerImage: this.height,
             },
             [this.width, this.height, 1]
@@ -366,7 +389,18 @@ export class Solver {
     
         await outputBuffer.mapAsync(GPUMapMode.READ);
         const arrayBuffer = outputBuffer.getMappedRange();
-        const resultImage = new Uint8Array(arrayBuffer.slice(0));
+        const floatData = new Float32Array(arrayBuffer.slice(0));
+
+        // Convert to Uint8Array for display (optional)
+        const resultImage = new Uint8Array(this.width * this.height * 4);
+        for (let i = 0; i < floatData.length; i += 4) {
+            // Simple normalization for display
+            resultImage[i] = Math.max(0, Math.min(255, floatData[i+2] * 255));
+            resultImage[i+1] = Math.max(0, Math.min(255, floatData[i+1] * 255));
+            resultImage[i+2] = Math.max(0, Math.min(255, floatData[i] * 255)); 
+            resultImage[i+3] = Math.max(0, Math.min(255, floatData[i+3] * 255));
+        }
+
         outputBuffer.unmap();
     
         return resultImage;
