@@ -1,6 +1,6 @@
 @group(0) @binding(0) var reconstructionTexture: texture_2d<f32>;
 @group(0) @binding(1) var correctionTexture: texture_2d<f32>;
-@group(0) @binding(2) var outputTexture: texture_storage_2d<bgra8unorm, write>;
+@group(0) @binding(2) var outputTexture: texture_storage_2d<rgba32float, write>;
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {

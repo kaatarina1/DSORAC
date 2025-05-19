@@ -1,7 +1,8 @@
 import { Solver } from "./Solvers";
+import { convertTexture } from "./Utils";
 
 export class MultigridSolver {
-    constructor(canvas, device, levels = 4, nSmooth = 100, nSolve = 50) {
+    constructor(canvas, device, levels = 10, nSmooth = 5000, nSolve = 2500) {
         this.canvas = canvas;
         this.device = device;
         this.levels = levels;
@@ -14,7 +15,7 @@ export class MultigridSolver {
         this.correctionPipeline = null;
         this.residualPipeline = null;
         this.sorSolver = new Solver(canvas, device);
-        this.format = "bgra8unorm"; 
+        this.format = "rgba32float"; 
     }
 
     async initializeGrids() {
@@ -23,7 +24,7 @@ export class MultigridSolver {
         for (let i = 0; i < this.levels; i++) {
             const levelWidth = Math.max(1, this.width >> i);
             const levelHeight = Math.max(1, this.height >> i);
-            
+            console.log(`Level ${i}: ${levelWidth}x${levelHeight}`);
             this.grid[i] = {
                 width: levelWidth,
                 height: levelHeight,
@@ -61,7 +62,7 @@ export class MultigridSolver {
                 }),
                 temp: this.device.createTexture({
                     size: [levelWidth, levelHeight],
-                    format: 'rgba32float',
+                    format: this.format,
                     usage: GPUTextureUsage.TEXTURE_BINDING | 
                            GPUTextureUsage.STORAGE_BINDING |
                            GPUTextureUsage.COPY_SRC |
@@ -131,15 +132,12 @@ export class MultigridSolver {
     async multigridSolve(captureTexture) {
         await this.initialize();
 
-        await this.copyTexture(captureTexture, this.grid[0].points);
-
-        // await this.clearTexture(this.grid[0].reconstructionRead);
-        // await this.clearTexture(this.grid[0].reconstructionWrite);
+        await convertTexture(this.device, this.width, this.height, captureTexture, this.grid[0].points);
 
         await this.vCycle(0);
         
         const outputBuffer = this.device.createBuffer({
-			size: this.width * this.height * 4, // 4 bytes per pixel (RGBA)
+			size: this.width * this.height * 16, // 4 bytes per pixel (RGBA)
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
 		});
 
@@ -153,7 +151,7 @@ export class MultigridSolver {
 			},
 			{
 				buffer: outputBuffer,
-				bytesPerRow: this.width * 4,
+				bytesPerRow: this.width * 16,
 				rowsPerImage: this.height,
 			},
 			[this.width, this.height, 1]
@@ -164,7 +162,18 @@ export class MultigridSolver {
 
 		await outputBuffer.mapAsync(GPUMapMode.READ);
 		const outputArrayBuffer = outputBuffer.getMappedRange();
-		const outputImage = new Uint8Array(outputArrayBuffer.slice(0));
+		const floatData = new Float32Array(outputArrayBuffer.slice(0));
+
+        // Convert to Uint8Array for display (optional)
+        const outputImage = new Uint8Array(this.width * this.height * 4);
+        for (let i = 0; i < floatData.length; i += 4) {
+            // Simple normalization for display
+            outputImage[i] = Math.max(0, Math.min(255, floatData[i+2] * 255));
+            outputImage[i+1] = Math.max(0, Math.min(255, floatData[i+1] * 255));
+            outputImage[i+2] = Math.max(0, Math.min(255, floatData[i] * 255)); 
+            outputImage[i+3] = Math.max(0, Math.min(255, floatData[i+3] * 255));
+        }
+
 
 		outputBuffer.unmap();
         this.destroy();
@@ -184,11 +193,6 @@ export class MultigridSolver {
             height
         } = this.grid[level];
 
-        if (level === this.levels - 1) {
-            await this.smooth(level, this.nSolve);
-            return;
-        }
-
         await this.smooth(level, this.nSmooth);
 
         await this.computeResidual(level);
@@ -196,18 +200,20 @@ export class MultigridSolver {
         await this.restrict(level, temp, this.grid[level + 1].f, false);
         await this.restrict(level, points, this.grid[level + 1].points, true);
 
-        // await this.clearTexture(this.grid[depth + 1].reconstructionRead);
-        // await this.clearTexture(this.grid[depth + 1].reconstructionWrite);
-
-        await this.vCycle(level + 1);
-
+        if (level + 1 < this.levels - 1) {
+            await this.vCycle(level + 1);
+        } else {
+            await this.smooth(level + 1, this.nSolve);
+        }
+        
         await this.correct(level);
+        [this.grid[level].reconstructionRead, this.grid[level].reconstructionWrite] = [this.grid[level].reconstructionWrite, this.grid[level].reconstructionRead];
 
         await this.smooth(level, this.nSmooth);
         
     }
 
-    async smooth(level, iterations = 1000) {
+    async smooth(level, iterations = 20000) {
         const {
             reconstructionRead,
             reconstructionWrite,

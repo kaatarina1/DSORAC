@@ -32,5 +32,5 @@ fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
 
 @fragment
 fn fragment(input: VertexOutput) -> @location(0) vec4f {
-    return input.color;
+    return input.color.rgba;
 }
