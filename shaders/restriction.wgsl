@@ -4,25 +4,33 @@
 
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let size = textureDimensions(outputTexture);
-    
-    // Check if within texture bounds
-    if (global_id.x >= size.x || global_id.y >= size.y) {
+    let outputSize = textureDimensions(outputTexture);
+    let inputSize = textureDimensions(inputTexture);
+
+    // Exit if out of bounds
+    if (global_id.x >= outputSize.x || global_id.y >= outputSize.y) {
         return;
     }
 
-    // Calculate texture coordinates
-    let outCoord = vec2<i32>(global_id.xy);
-    let texCoord = vec2<f32>(f32(global_id.x) / f32(size.x), f32(global_id.y) / f32(size.y));
-    
-    // Sample input texture
-    let color = textureLoad(inputTexture, outCoord, 0);
-    
-    // Apply boundary conditions if needed
-    if (boundary != 0u) {
-        // Boundary conditions on coarser grids are homogeneous
-        textureStore(outputTexture, outCoord, vec4<f32>(0.0, 0.0, 0.0, color.a));
-    } else {
-        textureStore(outputTexture, outCoord, color);
-    }
+    // Calculate the base coordinate in the input texture (2x2 block per output pixel)
+    let inputBaseCoord = vec2<u32>(global_id.xy) * 2u;
+
+    // Sample 4 input pixels (bilinear interpolation would also work)
+    let color0 = textureLoad(inputTexture, vec2<i32>(inputBaseCoord), 0);
+    let color1 = textureLoad(inputTexture, vec2<i32>(inputBaseCoord + vec2<u32>(1u, 0u)), 0);
+    let color2 = textureLoad(inputTexture, vec2<i32>(inputBaseCoord + vec2<u32>(0u, 1u)), 0);
+    let color3 = textureLoad(inputTexture, vec2<i32>(inputBaseCoord + vec2<u32>(1u, 1u)), 0);
+
+    // Average the 4 samples
+    let averagedColor = (color0 + color1 + color2 + color3) * 0.25;
+
+    // Apply boundary condition (optional)
+    let outputColor = select(
+        averagedColor,
+        vec4<f32>(0.0, 0.0, 0.0, averagedColor.a),
+        boundary != 0u
+    );
+
+    // Write to output
+    textureStore(outputTexture, vec2<i32>(global_id.xy), outputColor);
 }

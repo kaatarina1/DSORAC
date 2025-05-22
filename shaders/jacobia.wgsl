@@ -22,7 +22,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Neighbor sampling
     let c = textureLoad(uReconstruction, vec2<i32>(global_id.xy), 0);
-    let f = 2.0;
+    let f = textureLoad(uReconstruction, vec2<i32>(global_id.xy), 0);
     let l = textureLoad(uReconstruction, vec2<i32>(global_id.xy) + vec2<i32>(-1, 0), 0);
     let r = textureLoad(uReconstruction, vec2<i32>(global_id.xy) + vec2<i32>(1, 0), 0);
     let d = textureLoad(uReconstruction, vec2<i32>(global_id.xy) + vec2<i32>(0, -1), 0);
