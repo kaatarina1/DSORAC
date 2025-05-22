@@ -9,6 +9,10 @@ export class Composer {
 		
         this.pipeline = this.createPipeline();
 
+        this.depthPoints = [];
+        this.reconstructions = [];
+        this.sdfs = [];
+
         this.backgroundTexture = null;
         this.compositeResult = null;
 	}
@@ -336,6 +340,12 @@ export class Composer {
                 [this.width, this.height]
             );
         }
-    }    
+    }
+    
+    async addLayers(reconstruction, sdf, points) {
+        this.depthPoints.push(points);
+        this.reconstructions.push(reconstruction);
+        this.sdfs.push(sdf);
+    }
 
 }

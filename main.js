@@ -8,6 +8,7 @@ import { Composer } from "./js/Composer.js";
 import { LasLoader } from "./js/LasLoader.js";
 import { MultigridSolver } from "./js/MultigridSolver.js";
 import { ConjugateGradientSolver } from "./js/ConjugateGradientSolver.js";
+import { SignedDistanceFiled } from "./js/SignedDistanceFiled.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -82,22 +83,30 @@ function createPointCloud(numberOfPoints, count) {
 	const pointDataView = new DataView(pointData);
 
 	// Populate the data with positions and colors
-    let startIndex = count * numberOfPoints;
-    for (let i = 0; i < numberOfPoints; i++) {
-        const posIndex = (startIndex + i) * 3;
-        const pointOffset = i * pointByteSize;
-        
-        // Write position XYZ
-        pointDataView.setFloat32(pointOffset, positions[posIndex], true);
-        pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
-        pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
-        
-        // Write color as uint32
-        pointDataView.setUint32(pointOffset + 12, colors[startIndex + i], true);
-    }
+	let startIndex = count * numberOfPoints;
+	for (let i = 0; i < numberOfPoints; i++) {
+		const posIndex = (startIndex + i) * 3;
+		const pointOffset = i * pointByteSize;
 
-    // Write the point data directly to the GPU buffer
-    device.queue.writeBuffer(pointBuffer, 0, pointData);
+		// Write position XYZ
+		pointDataView.setFloat32(pointOffset, positions[posIndex], true);
+		pointDataView.setFloat32(
+			pointOffset + 4,
+			positions[posIndex + 1],
+			true
+		);
+		pointDataView.setFloat32(
+			pointOffset + 8,
+			positions[posIndex + 2],
+			true
+		);
+
+		// Write color as uint32
+		pointDataView.setUint32(pointOffset + 12, colors[startIndex + i], true);
+	}
+
+	// Write the point data directly to the GPU buffer
+	device.queue.writeBuffer(pointBuffer, 0, pointData);
 
 	const uniformBuffer = device.createBuffer({
 		size: 4,
@@ -136,22 +145,22 @@ for (let i = 0; i < numberOfAllPoints / maxNumberOfPointsPerBuffer; i++) {
 			: numberOfAllPoints,
 		i
 	);
-    pointclouds.push(pointcloud);
+	pointclouds.push(pointcloud);
 	// For debugging if needed
-    // const stagingBuffer = device.createBuffer({
-    //     size: pointcloud.numberOfPoints * pointByteSize,
-    //     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-    // });
-    // const commandEncoder = device.createCommandEncoder();
-    // commandEncoder.copyBufferToBuffer(
-    //     pointcloud.pointBuffer, // Source buffer
-    //     0, // Source offset
-    //     stagingBuffer, // Destination buffer
-    //     0, // Destination offset
-    //     pointcloud.numberOfPoints * pointByteSize // Size of data to copy
-    // );
-    // device.queue.submit([commandEncoder.finish()]);
-    // readPointBuffer(stagingBuffer);
+	// const stagingBuffer = device.createBuffer({
+	//     size: pointcloud.numberOfPoints * pointByteSize,
+	//     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+	// });
+	// const commandEncoder = device.createCommandEncoder();
+	// commandEncoder.copyBufferToBuffer(
+	//     pointcloud.pointBuffer, // Source buffer
+	//     0, // Source offset
+	//     stagingBuffer, // Destination buffer
+	//     0, // Destination offset
+	//     pointcloud.numberOfPoints * pointByteSize // Size of data to copy
+	// );
+	// device.queue.submit([commandEncoder.finish()]);
+	// readPointBuffer(stagingBuffer);
 }
 
 // Used for debugging
@@ -403,19 +412,25 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// Create texture resources
 	let reconstructionRead = device.createTexture({
 		size: [canvas.width, canvas.height],
-		format: 'rgba32float',
+		format: "rgba32float",
 		usage:
 			GPUTextureUsage.STORAGE_BINDING |
 			GPUTextureUsage.TEXTURE_BINDING |
 			GPUTextureUsage.COPY_DST |
 			GPUTextureUsage.COPY_SRC,
 	});
-	
-	await convertTexture(device, canvas.width, canvas.height, captureTexture, reconstructionRead);
+
+	await convertTexture(
+		device,
+		canvas.width,
+		canvas.height,
+		captureTexture,
+		reconstructionRead
+	);
 
 	let reconstructionWrite = device.createTexture({
 		size: [canvas.width, canvas.height],
-		format: 'rgba32float',
+		format: "rgba32float",
 		usage:
 			GPUTextureUsage.STORAGE_BINDING |
 			GPUTextureUsage.TEXTURE_BINDING |
@@ -436,15 +451,28 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 		`orig_depth_layer_${minDepth}_${maxDepth}.png`
 	);
 
-	// let solver = new Solver(canvas, device);
-	// let image = await solver.sorWithResidual(
-	// 	captureTexture,
-	// 	reconstructionRead,
-	// 	reconstructionWrite
-	// );
+	const sdf = new SignedDistanceFiled(device, captureTexture, canvas.width, canvas.height);
+	const sdfTexture = await sdf.generateSDF();
 
-	let multigridSolver = new MultigridSolver(canvas, device);
-	let image = await multigridSolver.multigridSolve(captureTexture);
+	// var image;
+	// for (let i = 0; i < 1000; i++) {
+	// 	let solver = new Solver(canvas, device);
+	// 	image = await solver.jacobian(
+	// 		captureTexture,
+	// 		reconstructionRead,
+	// 		reconstructionWrite
+	// 	);
+	// }
+	
+	let solver = new Solver(canvas, device);
+	let image = await solver.sorRedBlack(
+			captureTexture,
+			reconstructionRead,
+			reconstructionWrite
+		);
+
+	// let multigridSolver = new MultigridSolver(canvas, device);
+	// let image = await multigridSolver.multigridSolve(captureTexture);
 
 	// let cgSolver = new ConjugateGradientSolver(canvas, device);
 	// let image = await cgSolver.conjGradientSolve(captureTexture, reconstructionRead, reconstructionWrite);
@@ -456,11 +484,12 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 		`depth_layer_${minDepth}_${maxDepth}.png`
 	);
 
-	await composer.compositeLayer(image);
+	await composer.addLayers(sdfTexture, reconstructionRead, captureTexture);
 
 	captureTexture.destroy();
 	reconstructionRead.destroy();
 	reconstructionWrite.destroy();
+	sdfTexture.destroy();
 	depthRangeBuffer.destroy();
 }
 

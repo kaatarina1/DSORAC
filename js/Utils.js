@@ -70,6 +70,34 @@ export async function saveTextureToPNG(imageData, width, height, fileName) {
 	document.body.removeChild(a);
 }
 
+export async function saveSDFToPNG(imageData, width, height, fileName) {
+	// Step 4: Create a canvas and draw the image data
+	const canvas = document.createElement("canvas");
+	canvas.width = width;
+	canvas.height = height;
+	const ctx = canvas.getContext("2d");
+	const imageDataObj = ctx.createImageData(width, height);
+	let index = 0;
+	for (let i = 0; i < imageData.length; i++) {
+		// BGRA to RGBA
+		imageDataObj.data[index] = 255;
+		imageDataObj.data[index + 1] = 255;
+		imageDataObj.data[index + 2] = 255;
+		imageDataObj.data[index + 3] = imageData[i] * 255;
+		index += 4;
+	}
+	ctx.putImageData(imageDataObj, 0, 0);
+
+	// Step 5: Convert canvas content to PNG and trigger download
+	const dataURL = canvas.toDataURL("image/png");
+	const a = document.createElement("a");
+	a.href = dataURL;
+	a.download = fileName;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+}
+
 async function createConversionPipeline(device) {
     const convertCode = await fetch("./shaders/convert.wgsl").then((res) => res.text());
     const convertModule = device.createShaderModule({ code: convertCode });
