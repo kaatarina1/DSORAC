@@ -13,7 +13,7 @@ import { SignedDistanceFiled } from "./js/SignedDistanceFiled.js";
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
 const device = await adapter?.requestDevice({
-	requiredFeatures: hasBGRA8unormStorage ? ["bgra8unorm-storage"] : [],
+	requiredFeatures: hasBGRA8unormStorage ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable"] : ["float32-filterable", "float32-blendable"],
 });
 const canvas = document.querySelector("canvas");
 const context = canvas.getContext("webgpu");
@@ -277,7 +277,7 @@ document.addEventListener("keydown", async (event) => {
 
 		let depthMap = new DepthMap(canvas, device, depthTexture);
 		let depthValues = await depthMap.groupDepthIntoBins();
-		depthValues.reverse();
+		// depthValues.reverse();
 
 		for (let i = 0; i < depthValues.length; i++) {
 			console.log(i);
@@ -287,43 +287,45 @@ document.addEventListener("keydown", async (event) => {
 			);
 		}
 
+		// await composer.compositeDepths();
+
 		// await renderPointsInDepthRange(
 		// 	0,
 		// 	1
 		// );
 
-		const outputBuffer = device.createBuffer({
-			size: canvas.width * canvas.height * 4,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-		});
+		// const outputBuffer = device.createBuffer({
+		// 	size: canvas.width * canvas.height * 4,
+		// 	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		// });
 
-		const commandEncoder = device.createCommandEncoder();
-		commandEncoder.copyTextureToBuffer(
-			{ texture: composer.compositeResult },
-			{
-				buffer: outputBuffer,
-				bytesPerRow: canvas.width * 4,
-				rowsPerImage: canvas.height,
-			},
-			[canvas.width, canvas.height, 1]
-		);
-		device.queue.submit([commandEncoder.finish()]);
+		// const commandEncoder = device.createCommandEncoder();
+		// commandEncoder.copyTextureToBuffer(
+		// 	{ texture: composer.compositeResult },
+		// 	{
+		// 		buffer: outputBuffer,
+		// 		bytesPerRow: canvas.width * 4,
+		// 		rowsPerImage: canvas.height,
+		// 	},
+		// 	[canvas.width, canvas.height, 1]
+		// );
+		// device.queue.submit([commandEncoder.finish()]);
 
-		await outputBuffer.mapAsync(GPUMapMode.READ);
-		const arrayBuffer = outputBuffer.getMappedRange();
-		const imageData = new Uint8Array(arrayBuffer);
+		// await outputBuffer.mapAsync(GPUMapMode.READ);
+		// const arrayBuffer = outputBuffer.getMappedRange();
+		// const imageData = new Uint8Array(arrayBuffer);
 
-		// Save the final composite
-		await saveTextureToPNG(
-			imageData,
-			canvas.width,
-			canvas.height,
-			"composite_final.png"
-		);
-		outputBuffer.unmap();
-		outputBuffer.destroy();
-		composer.compositeResult.destroy();
-		composer.compositeResult = null;
+		// // Save the final composite
+		// await saveTextureToPNG(
+		// 	imageData,
+		// 	canvas.width,
+		// 	canvas.height,
+		// 	"composite_final.png"
+		// );
+		// outputBuffer.unmap();
+		// outputBuffer.destroy();
+		// composer.compositeResult.destroy();
+		// composer.compositeResult = null;
 		const endTime = performance.now();
 		console.log(`Composite completed in ${endTime - startTime} ms`);
 	}
@@ -444,18 +446,23 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	const arrayBuffer = outputBuffer.getMappedRange();
 	const imageData = new Uint8Array(arrayBuffer);
 
-	await saveTextureToPNG(
-		imageData,
-		canvas.width,
-		canvas.height,
-		`orig_depth_layer_${minDepth}_${maxDepth}.png`
-	);
+	// await saveTextureToPNG(
+	// 	imageData,
+	// 	canvas.width,
+	// 	canvas.height,
+	// 	`orig_depth_layer_${minDepth}_${maxDepth}.png`
+	// );
 
-	const sdf = new SignedDistanceFiled(device, captureTexture, canvas.width, canvas.height);
+	const sdf = new SignedDistanceFiled(
+		device,
+		captureTexture,
+		canvas.width,
+		canvas.height
+	);
 	const sdfTexture = await sdf.generateSDF();
 
 	// var image;
-	// for (let i = 0; i < 1000; i++) {
+	// for (let i = 0; i < 60; i++) {
 	// 	let solver = new Solver(canvas, device);
 	// 	image = await solver.jacobian(
 	// 		captureTexture,
@@ -463,28 +470,46 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// 		reconstructionWrite
 	// 	);
 	// }
-	
-	let solver = new Solver(canvas, device);
-	let image = await solver.sorRedBlack(
-			captureTexture,
-			reconstructionRead,
-			reconstructionWrite
-		);
 
-	// let multigridSolver = new MultigridSolver(canvas, device);
-	// let image = await multigridSolver.multigridSolve(captureTexture);
+	// let solver = new Solver(canvas, device);
+	// let image = await solver.sorRedBlack(
+	// 	captureTexture,
+	// 	reconstructionRead,
+	// 	reconstructionWrite
+	// );
+
+	let multigridSolver = new MultigridSolver(canvas, device);
+	let image = await multigridSolver.multigridSolve(captureTexture);
 
 	// let cgSolver = new ConjugateGradientSolver(canvas, device);
 	// let image = await cgSolver.conjGradientSolve(captureTexture, reconstructionRead, reconstructionWrite);
 
-	await saveTextureToPNG(
-		image,
+	// await saveTextureToPNG(
+	// 	image,
+	// 	canvas.width,
+	// 	canvas.height,
+	// 	`depth_layer_${minDepth}_${maxDepth}.png`
+	// );
+
+	let pointsTexture = device.createTexture({
+		size: [canvas.width, canvas.height],
+		format: "rgba32float",
+		usage:
+			GPUTextureUsage.STORAGE_BINDING |
+			GPUTextureUsage.TEXTURE_BINDING |
+			GPUTextureUsage.COPY_DST |
+			GPUTextureUsage.COPY_SRC,
+	});
+
+	await convertTexture(
+		device,
 		canvas.width,
 		canvas.height,
-		`depth_layer_${minDepth}_${maxDepth}.png`
+		captureTexture,
+		pointsTexture
 	);
 
-	await composer.addLayers(sdfTexture, reconstructionRead, captureTexture);
+	await composer.addLayers(sdfTexture, reconstructionRead, pointsTexture);
 
 	captureTexture.destroy();
 	reconstructionRead.destroy();

@@ -7,7 +7,7 @@ export class Solver {
 		this.jacobianPipeline = null;
 		this.residualPipeline = null;
 		this.updateRedBlackPipeline = null;
-		this.maxIterations = 5000;
+		this.maxIterations = 15000;
 	}
 
 	async createJacobianPipeline() {

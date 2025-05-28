@@ -2,7 +2,7 @@ import { Solver } from "./Solvers";
 import { convertTexture } from "./Utils";
 
 export class MultigridSolver {
-	constructor(canvas, device, levels = 7, nSmooth = 50, nSolve = 20) {
+	constructor(canvas, device, levels = 10, nSmooth = 50, nSolve = 20) {
 		this.canvas = canvas;
 		this.device = device;
 		this.levels = levels;
@@ -72,20 +72,7 @@ export class MultigridSolver {
 						GPUTextureUsage.COPY_SRC |
 						GPUTextureUsage.COPY_DST,
 				}),
-				residual: this.device.createBuffer({
-					size: 4, // For reduction steps
-					usage:
-						GPUBufferUsage.STORAGE |
-						GPUBufferUsage.COPY_SRC |
-						GPUBufferUsage.COPY_DST,
-				}),
 			};
-
-			this.device.queue.writeBuffer(
-				this.grid[i].residual,
-				0,
-				new Uint32Array([0])
-			);
 		}
 	}
 
@@ -189,12 +176,12 @@ export class MultigridSolver {
 		const outputImage = new Uint8Array(this.width * this.height * 4);
 		for (let i = 0; i < floatData.length; i += 4) {
 			// Simple normalization for display
-			outputImage[i] = Math.max(0, Math.min(255, floatData[i + 2] * 255));
+			outputImage[i] = Math.max(0, Math.min(255, floatData[i] * 255));
 			outputImage[i + 1] = Math.max(
 				0,
 				Math.min(255, floatData[i + 1] * 255)
 			);
-			outputImage[i + 2] = Math.max(0, Math.min(255, floatData[i] * 255));
+			outputImage[i + 2] = Math.max(0, Math.min(255, floatData[i + 2] * 255));
 			outputImage[i + 3] = Math.max(
 				0,
 				Math.min(255, floatData[i + 3] * 255)
@@ -209,13 +196,8 @@ export class MultigridSolver {
 
 	async vCycle(level) {
 		const {
-			reconstructionRead,
-			reconstructionWrite,
 			points,
-			f,
 			temp,
-			width,
-			height,
 		} = this.grid[level];
 
 		await this.smooth(level, this.nSmooth);
@@ -225,7 +207,7 @@ export class MultigridSolver {
 		await this.restrict(level, temp, this.grid[level + 1].f, false);
 		await this.restrict(level, points, this.grid[level + 1].points, true);
 
-		if (level + 1 < this.levels - 1) {
+		if (level + 2 < this.levels) {
 			await this.vCycle(level + 1);
 		} else {
 			await this.smooth(level + 1, this.nSolve);
@@ -243,11 +225,12 @@ export class MultigridSolver {
 		await this.smooth(level, this.nSmooth);
 	}
 
-	async smooth(level, iterations = 20000) {
+	async smooth(level, iterations) {
 		const {
 			reconstructionRead,
 			reconstructionWrite,
 			points,
+			f,
 			width,
 			height,
 		} = this.grid[level];
@@ -259,17 +242,23 @@ export class MultigridSolver {
 		await this.sorSolver.sorRedBlack(
 			points,
 			reconstructionRead,
-			reconstructionWrite
+			reconstructionWrite,
+			f
 		);
 
-		// Copy result back to reconstructionRead for next operations
-		await this.copyTexture(reconstructionWrite, reconstructionRead);
+		
 	}
 
 	async computeResidual(level) {
-		const { reconstructionRead, points, temp, residual, width, height } =
+		const { reconstructionRead, points, temp, f, width, height } =
 			this.grid[level];
-		this.device.queue.writeBuffer(residual, 0, new Uint32Array([0]));
+		
+		const textureSampler = this.device.createSampler({
+			magFilter: 'linear',  
+			minFilter: 'linear',  
+			addressModeU: 'clamp-to-edge', 
+			addressModeV: 'clamp-to-edge',
+		});
 
 		const commandEncoder = this.device.createCommandEncoder();
 		const bindingGroup = this.device.createBindGroup({
@@ -285,13 +274,15 @@ export class MultigridSolver {
 				},
 				{
 					binding: 2,
-					resource: temp.createView(),
+					resource: f.createView(),
 				},
 				{
 					binding: 3,
-					resource: {
-						buffer: residual,
-					},
+					resource: textureSampler,
+				},
+				{
+					binding: 4,
+					resource: temp.createView(),
 				},
 			],
 		});
@@ -322,6 +313,13 @@ export class MultigridSolver {
 			new Uint32Array([isBoundary ? 1 : 0])
 		);
 
+		const textureSampler = this.device.createSampler({
+			magFilter: 'linear',  
+			minFilter: 'linear',  
+			addressModeU: 'clamp-to-edge', 
+			addressModeV: 'clamp-to-edge',
+		});
+
 		const commandEncoder = this.device.createCommandEncoder();
 		const bindingGroup = this.device.createBindGroup({
 			layout: this.restrictionPipeline.getBindGroupLayout(0),
@@ -336,6 +334,10 @@ export class MultigridSolver {
 				},
 				{
 					binding: 2,
+					resource: textureSampler,
+				},
+				{
+					binding: 3,
 					resource: { buffer: boundaryBuffer },
 				},
 			],
@@ -358,6 +360,13 @@ export class MultigridSolver {
 		const fineLevel = this.grid[level];
 		const coarseLevel = this.grid[level + 1];
 
+		const textureSampler = this.device.createSampler({
+			magFilter: 'linear',  
+			minFilter: 'linear',  
+			addressModeU: 'clamp-to-edge', 
+			addressModeV: 'clamp-to-edge',
+		});
+
 		const commandEncoder = this.device.createCommandEncoder();
 		const bindingGroup = this.device.createBindGroup({
 			layout: this.correctionPipeline.getBindGroupLayout(0),
@@ -374,6 +383,10 @@ export class MultigridSolver {
 					binding: 2,
 					resource: fineLevel.reconstructionWrite.createView(),
 				},
+				{
+					binding: 3,
+					resource: textureSampler,
+				},
 			],
 		});
 
@@ -389,10 +402,10 @@ export class MultigridSolver {
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
 
-		await this.copyTexture(
-			fineLevel.reconstructionWrite,
-			fineLevel.reconstructionRead
-		);
+		// await this.copyTexture(
+		// 	fineLevel.reconstructionWrite,
+		// 	fineLevel.reconstructionRead
+		// );
 	}
 
 	async copyTexture(fromTexture, toTexture) {
@@ -409,14 +422,6 @@ export class MultigridSolver {
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
 	}
-
-	// async clearTexture(texture) {
-	//     const commandEncoder = this.device.createCommandEncoder();
-	//     const clearColor = { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-	//     commandEncoder.clearTexture(texture, clearColor);
-	//     this.device.queue.submit([commandEncoder.finish()]);
-	//     await this.device.queue.onSubmittedWorkDone();
-	// }
 
 	destroy() {
 		for (let i = 0; i < this.levels; i++) {
