@@ -7,7 +7,7 @@ export class Solver {
 		this.jacobianPipeline = null;
 		this.residualPipeline = null;
 		this.updateRedBlackPipeline = null;
-		this.maxIterations = 10000;
+		this.maxIterations = 5000;
 	}
 
 	async createJacobianPipeline() {
@@ -74,13 +74,21 @@ export class Solver {
 		this.jacobianPipeline = await this.createJacobianPipeline();
 		const jacobiCommandEncoder = this.device.createCommandEncoder();
 
+		const textureSampler = this.device.createSampler({
+			magFilter: 'linear',  
+			minFilter: 'linear',  
+			addressModeU: 'clamp-to-edge', 
+			addressModeV: 'clamp-to-edge',
+		});
+
 		for (let i = 0; i < this.maxIterations; i++) {
 			const jacobiaBindGroup = this.device.createBindGroup({
 				layout: this.jacobianPipeline.getBindGroupLayout(0),
 				entries: [
 					{ binding: 0, resource: captureTexture.createView() },
 					{ binding: 1, resource: reconstructionRead.createView() },
-					{ binding: 2, resource: reconstructionWrite.createView() },
+					{ binding: 2, resource: textureSampler },
+					{ binding: 3, resource: reconstructionWrite.createView() },
 				],
 			});
 			const jacobiaPassEncoder = jacobiCommandEncoder.beginComputePass();
@@ -131,7 +139,7 @@ export class Solver {
 			// Simple normalization for display
 			jacobianImage[i] = Math.max(
 				0,
-				Math.min(255, floatData[i + 2] * 255)
+				Math.min(255, floatData[i] * 255)
 			);
 			jacobianImage[i + 1] = Math.max(
 				0,
@@ -139,7 +147,7 @@ export class Solver {
 			);
 			jacobianImage[i + 2] = Math.max(
 				0,
-				Math.min(255, floatData[i] * 255)
+				Math.min(255, floatData[i + 2] * 255)
 			);
 			jacobianImage[i + 3] = Math.max(
 				0,
@@ -158,202 +166,27 @@ export class Solver {
 		return jacobianImage;
 	}
 
-	async sorWithResidual(
-		captureTexture,
-		reconstructionRead,
-		reconstructionWrite
-	) {
-		this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
-		this.residualPipeline = await this.createResidualPipeline();
-		const tolerance = 1e-5;
-		const omega = 1.9;
-		// Create textures for residuals
-		const residualTexture = this.device.createTexture({
-			size: [this.width, this.height],
-			format: "rgba32float",
-			usage:
-				GPUTextureUsage.STORAGE_BINDING |
-				GPUTextureUsage.TEXTURE_BINDING |
-				GPUTextureUsage.COPY_SRC,
-		});
-
-		const residualReductionBuffer = this.device.createBuffer({
-			size: 4, // For reduction steps
-			usage:
-				GPUBufferUsage.STORAGE |
-				GPUBufferUsage.COPY_SRC |
-				GPUBufferUsage.COPY_DST,
-		});
-		this.device.queue.writeBuffer(
-			residualReductionBuffer,
-			0,
-			new Uint32Array([0])
-		);
-
-		// Create buffer for red-black control
-		const redBlackBuffer = this.device.createBuffer({
-			size: 4,
-			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-		});
-
-		// Create buffer for omega value
-		const omegaBuffer = this.device.createBuffer({
-			size: 4,
-			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-		});
-		this.device.queue.writeBuffer(
-			omegaBuffer,
-			0,
-			new Float32Array([omega])
-		);
-
-		let iteration = 0;
-		let residualNorm = Infinity;
-
-		while (iteration < this.maxIterations && residualNorm > tolerance) {
-			// Alternate between red and black phases
-			for (let color = 0; color < 2; color++) {
-				this.device.queue.writeBuffer(
-					redBlackBuffer,
-					0,
-					new Uint32Array([color % 2])
-				);
-
-				const commandEncoder = this.device.createCommandEncoder();
-
-				// SOR update pass
-				const updateBindGroup = this.device.createBindGroup({
-					layout: this.updateRedBlackPipeline.getBindGroupLayout(0),
-					entries: [
-						{ binding: 0, resource: captureTexture.createView() },
-						{
-							binding: 1,
-							resource: reconstructionRead.createView(),
-						},
-						{
-							binding: 2,
-							resource: reconstructionWrite.createView(),
-						},
-						{ binding: 3, resource: { buffer: redBlackBuffer } },
-						{ binding: 4, resource: { buffer: omegaBuffer } },
-					],
-				});
-
-				const updatePass = commandEncoder.beginComputePass();
-				updatePass.setPipeline(this.updateRedBlackPipeline);
-				updatePass.setBindGroup(0, updateBindGroup);
-				updatePass.dispatchWorkgroups(
-					Math.ceil(this.width / 8),
-					Math.ceil(this.height / 8)
-				);
-				updatePass.end();
-
-				// Residual computation pass
-				const residualBindGroup = this.device.createBindGroup({
-					layout: this.residualPipeline.getBindGroupLayout(0),
-					entries: [
-						{ binding: 0, resource: captureTexture.createView() },
-						{
-							binding: 1,
-							resource: reconstructionWrite.createView(),
-						},
-						{ binding: 2, resource: residualTexture.createView() },
-						{
-							binding: 3,
-							resource: { buffer: residualReductionBuffer },
-						},
-					],
-				});
-
-				const residualPass = commandEncoder.beginComputePass();
-				residualPass.setPipeline(this.residualPipeline);
-				residualPass.setBindGroup(0, residualBindGroup);
-				residualPass.dispatchWorkgroups(
-					Math.ceil(this.width / 8),
-					Math.ceil(this.height / 8)
-				);
-				residualPass.end();
-
-				this.device.queue.submit([commandEncoder.finish()]);
-
-				// Swap textures for next iteration
-				[reconstructionRead, reconstructionWrite] = [
-					reconstructionWrite,
-					reconstructionRead,
-				];
-			}
-
-			residualNorm = await this.readResidualNorm(residualReductionBuffer);
-			iteration++;
-
-			if (iteration % 100 === 0) {
-				console.log(
-					`Iteration ${iteration}, residual: ${residualNorm}`
-				);
-			}
-		}
-
-		console.log(
-			`Converged in ${iteration} iterations with residual ${residualNorm}`
-		);
-
-		// Return final result
-		const outputBuffer = this.device.createBuffer({
-			size: this.width * this.height * 16,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-		});
-
-		const commandEncoder = this.device.createCommandEncoder();
-		commandEncoder.copyTextureToBuffer(
-			{
-				texture: reconstructionRead,
-				mipLevel: 0,
-				origin: { x: 0, y: 0, z: 0 },
-			},
-			{
-				buffer: outputBuffer,
-				bytesPerRow: this.width * 16,
-				rowsPerImage: this.height,
-			},
-			[this.width, this.height, 1]
-		);
-
-		this.device.queue.submit([commandEncoder.finish()]);
-		await this.device.queue.onSubmittedWorkDone();
-
-		await outputBuffer.mapAsync(GPUMapMode.READ);
-		const arrayBuffer = outputBuffer.getMappedRange();
-		const floatData = new Float32Array(arrayBuffer.slice(0));
-
-		// Convert to Uint8Array for display (optional)
-		const resultImage = new Uint8Array(this.width * this.height * 4);
-		for (let i = 0; i < floatData.length; i += 4) {
-			// Simple normalization for display
-			resultImage[i] = Math.max(0, Math.min(255, floatData[i + 2] * 255));
-			resultImage[i + 1] = Math.max(
-				0,
-				Math.min(255, floatData[i + 1] * 255)
-			);
-			resultImage[i + 2] = Math.max(0, Math.min(255, floatData[i] * 255));
-			resultImage[i + 3] = Math.max(
-				0,
-				Math.min(255, floatData[i + 3] * 255)
-			);
-		}
-
-		outputBuffer.unmap();
-
-		residualTexture.destroy();
-		residualReductionBuffer.destroy();
-		redBlackBuffer.destroy();
-		omegaBuffer.destroy();
-
-		return resultImage;
-	}
-
-	async sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite) {
+	async sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite, f) {
 		this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
 		const omega = 1.9;
+
+		if (!f) {
+			f = this.device.createTexture({
+				size: [this.width, this.height],
+				format: "rgba32float",
+				usage:
+					GPUTextureUsage.STORAGE_BINDING |
+					GPUTextureUsage.TEXTURE_BINDING |
+					GPUTextureUsage.COPY_SRC,
+				});
+		}
+
+		const textureSampler = this.device.createSampler({
+			magFilter: 'linear',  
+			minFilter: 'linear',  
+			addressModeU: 'clamp-to-edge', 
+			addressModeV: 'clamp-to-edge',
+		});
 
 		// Create buffer for red-black control
 		const redBlackBuffer = this.device.createBuffer({
@@ -396,8 +229,16 @@ export class Solver {
 							binding: 2,
 							resource: reconstructionWrite.createView(),
 						},
-						{ binding: 3, resource: { buffer: redBlackBuffer } },
-						{ binding: 4, resource: { buffer: omegaBuffer } },
+						{
+							binding: 3,
+							resource: f.createView(),
+						},
+						{
+							binding: 4,
+							resource: textureSampler,
+						},
+						{ binding: 5, resource: { buffer: redBlackBuffer } },
+						{ binding: 6, resource: { buffer: omegaBuffer } },
 					],
 				});
 
@@ -457,12 +298,12 @@ export class Solver {
 		const resultImage = new Uint8Array(this.width * this.height * 4);
 		for (let i = 0; i < floatData.length; i += 4) {
 			// Simple normalization for display
-			resultImage[i] = Math.max(0, Math.min(255, floatData[i + 2] * 255));
+			resultImage[i] = Math.max(0, Math.min(255, floatData[i] * 255));
 			resultImage[i + 1] = Math.max(
 				0,
 				Math.min(255, floatData[i + 1] * 255)
 			);
-			resultImage[i + 2] = Math.max(0, Math.min(255, floatData[i] * 255));
+			resultImage[i + 2] = Math.max(0, Math.min(255, floatData[i + 2] * 255));
 			resultImage[i + 3] = Math.max(
 				0,
 				Math.min(255, floatData[i + 3] * 255)
@@ -472,26 +313,5 @@ export class Solver {
 		outputBuffer.unmap();
 
 		return resultImage;
-	}
-
-	async readResidualNorm(buffer) {
-		// In a real implementation, you'd use parallel reduction
-		// For simplicity, we'll just read a single value here
-		const readbackBuffer = this.device.createBuffer({
-			size: 4,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-		});
-
-		const commandEncoder = this.device.createCommandEncoder();
-		commandEncoder.copyBufferToBuffer(buffer, 0, readbackBuffer, 0, 4);
-		this.device.queue.submit([commandEncoder.finish()]);
-
-		await readbackBuffer.mapAsync(GPUMapMode.READ);
-		const residual = new Uint32Array(readbackBuffer.getMappedRange())[0];
-		readbackBuffer.unmap();
-		readbackBuffer.destroy();
-
-		const residualNorm = residual / 1000.0;
-		return Math.sqrt(residualNorm / (this.width * this.height));
 	}
 }

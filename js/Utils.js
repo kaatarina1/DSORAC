@@ -53,9 +53,9 @@ export async function saveTextureToPNG(imageData, width, height, fileName) {
 	// Copy the pixel data to the ImageData object
 	for (let i = 0; i < imageData.length; i += 4) {
 		// BGRA to RGBA
-		imageDataObj.data[i] = imageData[i + 2];
+		imageDataObj.data[i] = imageData[i];
 		imageDataObj.data[i + 1] = imageData[i + 1];
-		imageDataObj.data[i + 2] = imageData[i];
+		imageDataObj.data[i + 2] = imageData[i + 2];
 		imageDataObj.data[i + 3] = imageData[i + 3];
 	}
 	ctx.putImageData(imageDataObj, 0, 0);
