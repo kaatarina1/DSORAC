@@ -7,7 +7,7 @@ export class DepthMap {
 		this.depthTexture = depthTexture;
 
 		this.depthStorageBuffer = this.device.createBuffer({
-			size: this.width * this.height * 4, // Float32 per pixel
+			size: this.width * this.height * 4,
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
 		});
 
@@ -51,8 +51,8 @@ export class DepthMap {
 				{
 					binding: 0,
 					resource: this.depthTexture.createView({
-						format: "depth32float", // Explicit format
-						aspect: "depth-only", // ← Important for depth textures
+						format: "depth32float", 
+						aspect: "depth-only", 
 					}),
 				},
 				{
@@ -65,16 +65,15 @@ export class DepthMap {
 		});
 	}
 
+	// Function for extracting depth values
+	// Returns depth bins
 	async extractDepthValues() {
-		// Create a new command encoder or use your existing one
 		const commandEncoder = this.device.createCommandEncoder();
 
-		// After the depth texture is created, run the compute pass to extract depth values
 		const computePass = commandEncoder.beginComputePass();
 		computePass.setPipeline(this.computePipeline);
 		computePass.setBindGroup(0, this.computeBindGroup);
 
-		// Calculate workgroup counts (ceil(dimension / workgroup_size))
 		const workgroupCountX = Math.ceil(this.width / 16);
 		const workgroupCountY = Math.ceil(this.height / 16);
 
@@ -90,33 +89,26 @@ export class DepthMap {
 			this.width * this.height * 4
 		);
 
-		// Submit the commands
 		this.device.queue.submit([commandEncoder.finish()]);
-
-		// Wait for GPU to complete the work
 		await this.device.queue.onSubmittedWorkDone();
 
 		// Map the buffer for reading
 		await this.readbackBuffer.mapAsync(GPUMapMode.READ);
 		const arrayBuffer = this.readbackBuffer.getMappedRange();
-
-		// Create a copy of the data (needed because buffer will be unmapped)
 		const depthValues = new Float32Array(arrayBuffer.slice(0));
 
-		// Clean up
 		this.readbackBuffer.unmap();
 
 		return depthValues;
 	}
 
+	// Creating bins based on the dapth and points density
 	async groupDepthIntoBins() {
-		// Get the raw depth values
 		let depthValues = await this.extractDepthValues();
   
-		// Filter out invalid depth values (0 or 1 typically represent invalid measurements)
+		// Filter out invalid depth values
 		depthValues = depthValues.filter(d => d > 0.001 && d < 0.999);
 		
-		// Find min/max without using spread operator
 		let minDepth = Infinity;
 		let maxDepth = -Infinity;
 		for (let i = 0; i < depthValues.length; i++) {
@@ -124,7 +116,6 @@ export class DepthMap {
 		  if (depthValues[i] > maxDepth) maxDepth = depthValues[i];
 		}
 		
-		// Create a histogram to analyze depth distribution
 		const histogramBins = 100;
 		const binWidth = (maxDepth - minDepth) / histogramBins;
 		
@@ -140,28 +131,25 @@ export class DepthMap {
 		
 		// Find peaks in the histogram (areas of high point density)
 		const peaks = [];
-		// Calculate the maximum value in histogram without using Math.max(...) 
 		let maxFrequency = 0;
 		for (let i = 0; i < histogram.length; i++) {
 		  if (histogram[i] > maxFrequency) maxFrequency = histogram[i];
 		}
 		
-		const peakThreshold = maxFrequency * 0.008; // Adjust sensitivity
+		const peakThreshold = maxFrequency * 0.01;
 		
 		for (let i = 1; i < histogramBins - 1; i++) {
 		  if (histogram[i] > peakThreshold && 
-			  histogram[i] > histogram[i-1] && 
-			  histogram[i] > histogram[i+1]) {
-			// Found a peak
+			  histogram[i] > histogram[i - 1] && 
+			  histogram[i] > histogram[i + 1]) {
 			const peakDepth = minDepth + (i + 0.5) * binWidth;
 			peaks.push(peakDepth);
 		  }
 		}
 		
 		// If no significant peaks found, fall back to uniform bins
-		if (peaks.length < 2) {
-		  console.log("No significant depth layers detected, using uniform bins");
-		  const numBins = 5; // Fallback to 5 uniform bins
+		if (peaks.length < 4) {
+		  const numBins = 15; 
 		  const uniformBins = [];
 		  for (let i = 0; i < numBins; i++) {
 			const start = minDepth + (maxDepth - minDepth) * (i / numBins);
@@ -174,17 +162,16 @@ export class DepthMap {
 		// Sort peaks by depth
 		peaks.sort((a, b) => a - b);
 		
-		// Create bins around peaks with adaptive widths
 		const bins = [];
 
-		// Add initial bin from 0 to first peak's lower bound
 		const firstPeakLowerBound = Math.max(0, (peaks[0] + (peaks[1] || maxDepth)) / 2);
-		bins.push([0, firstPeakLowerBound]);
+		if (firstPeakLowerBound > 1e-2) {
+			bins.push([0, firstPeakLowerBound]);
+		}
 
 		for (let i = 0; i < peaks.length; i++) {
 		  const peakDepth = peaks[i];
 		  
-		  // Calculate adaptive width based on distance to neighboring peaks
 		  let binStart, binEnd;
 		  
 		  if (i === 0) {
@@ -204,10 +191,6 @@ export class DepthMap {
 		  
 		  bins.push([binStart, binEnd]);
 		}
-
-		// Add final bin from last peak's upper bound to 1
-		const lastPeakUpperBound = Math.min(1, (peaks[peaks.length - 1] + (peaks[peaks.length - 2] || minDepth)) / 2);
-		bins.push([lastPeakUpperBound, 1]);
 		
 		console.log("Adaptive depth clusters:", bins);
 		return bins;
