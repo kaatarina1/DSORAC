@@ -9,6 +9,7 @@ import { LasLoader } from "./js/LasLoader.js";
 import { MultigridSolver } from "./js/MultigridSolver.js";
 import { ConjugateGradientSolver } from "./js/ConjugateGradientSolver.js";
 import { SignedDistanceFiled } from "./js/SignedDistanceFiled.js";
+import { Evaluation } from "./js/Evaluation.js";
 
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
@@ -279,7 +280,7 @@ document.addEventListener("keydown", async (event) => {
 		let depthValues = await depthMap.groupDepthIntoBins();
 		// depthValues.reverse();
 
-		for (let i = 0; i < depthValues.length; i++) {
+		for (let i = 0; i < 6; i++) {
 			console.log(i);
 			await renderPointsInDepthRange(
 				depthValues[i][0],
@@ -287,47 +288,137 @@ document.addEventListener("keydown", async (event) => {
 			);
 		}
 
-		// await composer.compositeDepths();
+		await composer.compositeDepths();
 
 		// await renderPointsInDepthRange(
 		// 	0,
 		// 	1
 		// );
 
-		// const outputBuffer = device.createBuffer({
-		// 	size: canvas.width * canvas.height * 4,
-		// 	usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-		// });
-
-		// const commandEncoder = device.createCommandEncoder();
-		// commandEncoder.copyTextureToBuffer(
-		// 	{ texture: composer.compositeResult },
-		// 	{
-		// 		buffer: outputBuffer,
-		// 		bytesPerRow: canvas.width * 4,
-		// 		rowsPerImage: canvas.height,
-		// 	},
-		// 	[canvas.width, canvas.height, 1]
-		// );
-		// device.queue.submit([commandEncoder.finish()]);
-
-		// await outputBuffer.mapAsync(GPUMapMode.READ);
-		// const arrayBuffer = outputBuffer.getMappedRange();
-		// const imageData = new Uint8Array(arrayBuffer);
-
-		// // Save the final composite
-		// await saveTextureToPNG(
-		// 	imageData,
-		// 	canvas.width,
-		// 	canvas.height,
-		// 	"composite_final.png"
-		// );
-		// outputBuffer.unmap();
-		// outputBuffer.destroy();
-		// composer.compositeResult.destroy();
-		// composer.compositeResult = null;
 		const endTime = performance.now();
 		console.log(`Composite completed in ${endTime - startTime} ms`);
+	}
+});
+
+document.addEventListener("keydown", async (event) => {
+	if (event.key === "E" || event.key === "e") {
+		const startTime = performance.now();
+
+		let orig_images = [
+			"../data/images/image2.png",
+			"../data/images/image3.png",
+		];
+		let rec_images = [
+			"../data/images/image2_50_alpha.png",
+			"../data/images/image3_50_alpha.png",
+			"../data/images/image2_80_alpha.png",
+			"../data/images/image3_80_alpha.png",
+			"../data/images/image2_90_alpha.png",
+			"../data/images/image3_90_alpha.png",
+			"../data/images/image2_95_alpha.png",
+			"../data/images/image3_95_alpha.png",
+			"../data/images/image2_99_alpha.png",
+			"../data/images/image3_99_alpha.png",
+		];
+		let maxIterations = [10, 50, 100, 500, 1000, 2000, 3000, 3500, 5000];
+
+		// console.log("--------------- Jacobi --------------------");
+		// for (let j = 0; j < rec_images.length; j++) {
+		// 	console.log("IMAGE ", rec_images[j]);
+		// 	for (let i = 0; i < maxIterations.length; i++) {
+		// 		console.log(
+		// 			"Reconstruction evaluation for ",
+		// 			maxIterations[i],
+		// 			"iterations"
+		// 		);
+		// 		const evaluator = new Evaluation(
+		// 			device,
+		// 			canvas,
+		// 			canvas.width,
+		// 			canvas.height,
+		// 			maxIterations[i],
+		// 			0,
+		// 			0,
+		// 			orig_images[j % 2],
+		// 			rec_images[j]
+		// 		);
+		// 		let psnr = await evaluator.evaluate_jacobi();
+		// 		console.log("PSNR = ", psnr);
+		// 	}
+		// }
+
+		// console.log("--------------- SOR --------------------");
+		// for (let j = 0; j < rec_images.length; j++) {
+		// 	console.log("IMAGE ", rec_images[j]);
+		// 	for (let i = 0; i < maxIterations.length; i++) {
+		// 		console.log(
+		// 			"Reconstruction evaluation for ",
+		// 			maxIterations[i],
+		// 			"iterations"
+		// 		);
+		// 		const evaluator = new Evaluation(
+		// 			device,
+		// 			canvas,
+		// 			canvas.width,
+		// 			canvas.height,
+		// 			maxIterations[i],
+		// 			0,
+		// 			0,
+		// 			orig_images[j % 2],
+		// 			rec_images[j]
+		// 		);
+		// 		let psnr = await evaluator.evaluate_sor();
+		// 		console.log("PSNR = ", psnr);
+		// 	}
+		// }
+
+		let nSoves = [2, 5, 10, 20];
+		let nSmooths = [5, 10, 20, 50];
+		for (let j = 0; j < rec_images.length; j++) {
+			console.log("IMAGE ", rec_images[j]);
+			for (let i = 0; i < nSoves.length; i++) {
+				console.log(
+					"Reconstruction evaluation for ",
+					nSoves[i],
+					" nSolves"
+				);
+				for (let k = 0; k < nSmooths.length; k++) {
+					console.log(
+						"Reconstruction evaluation for ",
+						nSmooths[k],
+						" nSmooth"
+					);
+					const evaluator = new Evaluation(
+						device,
+						canvas,
+						canvas.width,
+						canvas.height,
+						0,
+						nSoves[i],
+						nSmooths[k],
+						orig_images[j % 2],
+						rec_images[j]
+					);
+					let psnr = await evaluator.evaluate_multigrid();
+					console.log("PSNR = ", psnr);
+				}
+			}
+		}
+
+		// const evaluator = new Evaluation(
+		// 	device,
+		// 	canvas,
+		// 	canvas.width,
+		// 	canvas.height,
+		// 	maxIterations[5],
+		// 	nSoves[2],
+		// 	nSmooths[3],
+		// 	orig_images[0],
+		// 	rec_images[0]
+		// );
+		// let psnr = await evaluator.evaluate_jacobi();
+		// let psnr2 = await evaluator.evaluate_sor();
+		// await evaluator.evaluate_multigrid();
 	}
 });
 
@@ -509,7 +600,7 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 		pointsTexture
 	);
 
-	await composer.addLayers(sdfTexture, reconstructionRead, pointsTexture);
+	await composer.addLayers(sdfTexture, reconstructionRead, pointsTexture, (minDepth + maxDepth) / 2);
 
 	captureTexture.destroy();
 	reconstructionRead.destroy();

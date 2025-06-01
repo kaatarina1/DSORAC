@@ -16,6 +16,7 @@ export class MultigridSolver {
 		this.residualPipeline = null;
 		this.sorSolver = new Solver(canvas, device);
 		this.format = "rgba32float";
+		this.duration = 0;
 	}
 
 	async initializeGrids() {
@@ -23,7 +24,7 @@ export class MultigridSolver {
 		for (let i = 0; i < this.levels; i++) {
 			const levelWidth = Math.max(1, this.width >> i);
 			const levelHeight = Math.max(1, this.height >> i);
-			console.log(`Level ${i}: ${levelWidth}x${levelHeight}`);
+			// console.log(`Level ${i}: ${levelWidth}x${levelHeight}`);
 			this.grid[i] = {
 				width: levelWidth,
 				height: levelHeight,
@@ -188,6 +189,8 @@ export class MultigridSolver {
 			);
 		}
 
+		console.log('Multigrid time: ', this.duration);
+
 		outputBuffer.unmap();
 		this.destroy();
 
@@ -200,20 +203,20 @@ export class MultigridSolver {
 			temp,
 		} = this.grid[level];
 
-		await this.smooth(level, this.nSmooth);
+		this.duration += await this.smooth(level, this.nSmooth);
 
-		await this.computeResidual(level);
+		this.duration += await this.computeResidual(level);
 
-		await this.restrict(level, temp, this.grid[level + 1].f, false);
-		await this.restrict(level, points, this.grid[level + 1].points, true);
+		this.duration += await this.restrict(level, temp, this.grid[level + 1].f, false);
+		this.duration += await this.restrict(level, points, this.grid[level + 1].points, true);
 
 		if (level + 2 < this.levels) {
 			await this.vCycle(level + 1);
 		} else {
-			await this.smooth(level + 1, this.nSolve);
+			this.duration += await this.smooth(level + 1, this.nSolve);
 		}
 
-		await this.correct(level);
+		this.duration += await this.correct(level);
 		[
 			this.grid[level].reconstructionRead,
 			this.grid[level].reconstructionWrite,
@@ -222,7 +225,7 @@ export class MultigridSolver {
 			this.grid[level].reconstructionRead,
 		];
 
-		await this.smooth(level, this.nSmooth);
+		this.duration += await this.smooth(level, this.nSmooth);
 	}
 
 	async smooth(level, iterations) {
@@ -239,14 +242,14 @@ export class MultigridSolver {
 		this.sorSolver.maxIterations = iterations;
 		this.sorSolver.width = width;
 		this.sorSolver.height = height;
-		await this.sorSolver.sorRedBlack(
+		let duration = await this.sorSolver.sorRedBlack(
 			points,
 			reconstructionRead,
 			reconstructionWrite,
 			f
 		);
 
-		
+		return duration;
 	}
 
 	async computeResidual(level) {
@@ -258,6 +261,23 @@ export class MultigridSolver {
 			minFilter: 'linear',  
 			addressModeU: 'clamp-to-edge', 
 			addressModeV: 'clamp-to-edge',
+		});
+
+		const capacity = 3;//Max number of timestamps we can store
+		const querySet = this.device.createQuerySet({
+			type: "timestamp",
+			count: capacity,
+		});
+		const queryBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.QUERY_RESOLVE 
+			| GPUBufferUsage.STORAGE
+			| GPUBufferUsage.COPY_SRC
+			| GPUBufferUsage.COPY_DST,
+		});
+		const resultBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
 		});
 
 		const commandEncoder = this.device.createCommandEncoder();
@@ -287,14 +307,38 @@ export class MultigridSolver {
 			],
 		});
 
+		commandEncoder.writeTimestamp(querySet, 0);
 		const pass = commandEncoder.beginComputePass();
 		pass.setPipeline(this.residualPipeline);
 		pass.setBindGroup(0, bindingGroup);
 		pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
 		pass.end();
+		commandEncoder.writeTimestamp(querySet, 1);
 
+		commandEncoder.resolveQuerySet(
+			querySet,
+			0,
+			capacity,
+			queryBuffer,
+			0
+		);
+
+		commandEncoder.copyBufferToBuffer(
+			queryBuffer,
+			0,
+			resultBuffer, 
+			0,
+			8 * capacity
+		);
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
+
+		await resultBuffer.mapAsync(GPUMapMode.READ);
+		const timestamps = new BigUint64Array(resultBuffer.getMappedRange());
+		const durationNs = Number(timestamps[capacity - 2] - timestamps[0]);
+		const durationMs = durationNs / 1_000_000;
+		resultBuffer.unmap();
+		return durationMs;
 	}
 
 	async restrict(level, sourceTexture, targetTexture, isBoundary) {
@@ -320,6 +364,23 @@ export class MultigridSolver {
 			addressModeV: 'clamp-to-edge',
 		});
 
+		const capacity = 3;//Max number of timestamps we can store
+		const querySet = this.device.createQuerySet({
+			type: "timestamp",
+			count: capacity,
+		});
+		const queryBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.QUERY_RESOLVE 
+			| GPUBufferUsage.STORAGE
+			| GPUBufferUsage.COPY_SRC
+			| GPUBufferUsage.COPY_DST,
+		});
+		const resultBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
+
 		const commandEncoder = this.device.createCommandEncoder();
 		const bindingGroup = this.device.createBindGroup({
 			layout: this.restrictionPipeline.getBindGroupLayout(0),
@@ -343,6 +404,7 @@ export class MultigridSolver {
 			],
 		});
 
+		commandEncoder.writeTimestamp(querySet, 0);
 		const pass = commandEncoder.beginComputePass();
 		pass.setPipeline(this.restrictionPipeline);
 		pass.setBindGroup(0, bindingGroup);
@@ -351,9 +413,35 @@ export class MultigridSolver {
 			Math.ceil(targetHeight / 8)
 		);
 		pass.end();
+		commandEncoder.writeTimestamp(querySet, 1);
+
+		commandEncoder.resolveQuerySet(
+			querySet,
+			0,
+			capacity,
+			queryBuffer,
+			0
+		);
+
+		commandEncoder.copyBufferToBuffer(
+			queryBuffer,
+			0,
+			resultBuffer, 
+			0,
+			8 * capacity
+		);
 
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
+
+		await resultBuffer.mapAsync(GPUMapMode.READ);
+		const timestamps = new BigUint64Array(resultBuffer.getMappedRange());
+		const durationNs = Number(timestamps[capacity - 2] - timestamps[0]);
+		const durationMs = durationNs / 1_000_000;
+
+		resultBuffer.unmap();
+
+		return durationMs;
 	}
 
 	async correct(level) {
@@ -366,6 +454,24 @@ export class MultigridSolver {
 			addressModeU: 'clamp-to-edge', 
 			addressModeV: 'clamp-to-edge',
 		});
+
+		const capacity = 3;//Max number of timestamps we can store
+		const querySet = this.device.createQuerySet({
+			type: "timestamp",
+			count: capacity,
+		});
+		const queryBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.QUERY_RESOLVE 
+			| GPUBufferUsage.STORAGE
+			| GPUBufferUsage.COPY_SRC
+			| GPUBufferUsage.COPY_DST,
+		});
+		const resultBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
+
 
 		const commandEncoder = this.device.createCommandEncoder();
 		const bindingGroup = this.device.createBindGroup({
@@ -390,6 +496,7 @@ export class MultigridSolver {
 			],
 		});
 
+		commandEncoder.writeTimestamp(querySet, 0);
 		const pass = commandEncoder.beginComputePass();
 		pass.setPipeline(this.correctionPipeline);
 		pass.setBindGroup(0, bindingGroup);
@@ -398,9 +505,36 @@ export class MultigridSolver {
 			Math.ceil(fineLevel.height / 8)
 		);
 		pass.end();
+		commandEncoder.writeTimestamp(querySet, 1);
+
+		commandEncoder.resolveQuerySet(
+			querySet,
+			0,
+			capacity,
+			queryBuffer,
+			0
+		);
+
+		commandEncoder.copyBufferToBuffer(
+			queryBuffer,
+			0,
+			resultBuffer, 
+			0,
+			8 * capacity
+		);
 
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
+
+		await resultBuffer.mapAsync(GPUMapMode.READ);
+		const timestamps = new BigUint64Array(resultBuffer.getMappedRange());
+		const durationNs = Number(timestamps[capacity - 2] - timestamps[0]);
+		const durationMs = durationNs / 1_000_000;
+
+		resultBuffer.unmap();
+
+		return durationMs;
+
 
 		// await this.copyTexture(
 		// 	fineLevel.reconstructionWrite,

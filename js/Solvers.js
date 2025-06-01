@@ -7,7 +7,7 @@ export class Solver {
 		this.jacobianPipeline = null;
 		this.residualPipeline = null;
 		this.updateRedBlackPipeline = null;
-		this.maxIterations = 15000;
+		this.maxIterations = 1000;
 	}
 
 	async createJacobianPipeline() {
@@ -81,6 +81,24 @@ export class Solver {
 			addressModeV: 'clamp-to-edge',
 		});
 
+		const capacity = 3; //Max number of timestamps we can store
+		const querySet = this.device.createQuerySet({
+			type: "timestamp",
+			count: capacity,
+		});
+		const queryBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage:
+				GPUBufferUsage.QUERY_RESOLVE |
+				GPUBufferUsage.STORAGE |
+				GPUBufferUsage.COPY_SRC |
+				GPUBufferUsage.COPY_DST,
+		});
+		const resultBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
+
 		for (let i = 0; i < this.maxIterations; i++) {
 			const jacobiaBindGroup = this.device.createBindGroup({
 				layout: this.jacobianPipeline.getBindGroupLayout(0),
@@ -91,6 +109,11 @@ export class Solver {
 					{ binding: 3, resource: reconstructionWrite.createView() },
 				],
 			});
+
+			if (i == 0) {
+				jacobiCommandEncoder.writeTimestamp(querySet, 0);
+			}
+
 			const jacobiaPassEncoder = jacobiCommandEncoder.beginComputePass();
 			jacobiaPassEncoder.setPipeline(this.jacobianPipeline);
 			jacobiaPassEncoder.setBindGroup(0, jacobiaBindGroup);
@@ -100,6 +123,10 @@ export class Solver {
 			);
 			jacobiaPassEncoder.end();
 
+			if (i == this.maxIterations - 1) {
+				jacobiCommandEncoder.writeTimestamp(querySet, 1);
+			}
+
 			[reconstructionRead, reconstructionWrite] = [
 				reconstructionWrite,
 				reconstructionRead,
@@ -107,7 +134,7 @@ export class Solver {
 		}
 
 		const jacobiaOutputBuffer = this.device.createBuffer({
-			size: this.width * this.height * 16, // 4 bytes per pixel (RGBA)
+			size: this.width * this.height * 16,
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
 		});
 
@@ -123,6 +150,22 @@ export class Solver {
 				rowsPerImage: this.height,
 			},
 			[this.width, this.height, 1]
+		);
+
+		jacobiCommandEncoder.resolveQuerySet(
+			querySet,
+			0,
+			capacity,
+			queryBuffer,
+			0
+		);
+
+		jacobiCommandEncoder.copyBufferToBuffer(
+			queryBuffer,
+			0,
+			resultBuffer,
+			0,
+			8 * capacity
 		);
 
 		this.device.queue.submit([jacobiCommandEncoder.finish()]);
@@ -157,10 +200,14 @@ export class Solver {
 
 		jacobiaOutputBuffer.unmap();
 
-		console.log("Expected buffer size:", this.width * this.height * 4);
-		console.log("Actual buffer size:", jacobiaOutputBuffer.size);
-		console.log("ArrayBuffer length:", jacobiaArrayBuffer.byteLength);
-		console.log("Is buffer mapped?", jacobiaOutputBuffer.mapState);
+		await resultBuffer.mapAsync(GPUMapMode.READ);
+		const timestamps = new BigUint64Array(resultBuffer.getMappedRange());
+		const durationNs = Number(timestamps[capacity - 2] - timestamps[0]);
+		const durationMs = durationNs / 1_000_000;
+		console.log("Jacobi duration: ", durationMs);
+		console.log("Jacobi duration average per iteration: ", durationMs / this.maxIterations);
+
+		resultBuffer.unmap();
 		jacobiaOutputBuffer.unmap();
 
 		return jacobianImage;
@@ -188,13 +235,11 @@ export class Solver {
 			addressModeV: 'clamp-to-edge',
 		});
 
-		// Create buffer for red-black control
 		const redBlackBuffer = this.device.createBuffer({
 			size: 4,
 			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 		});
 
-		// Create buffer for omega value
 		const omegaBuffer = this.device.createBuffer({
 			size: 4,
 			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -205,14 +250,32 @@ export class Solver {
 			new Float32Array([omega])
 		);
 
+		let duration = 0;
 		for (let iteration = 0; iteration < this.maxIterations; iteration++) {
-			// Alternate between red and black phases
 			for (let color = 0; color < 2; color++) {
 				this.device.queue.writeBuffer(
 					redBlackBuffer,
 					0,
 					new Uint32Array([color % 2])
 				);
+
+				const capacity = 3; //Max number of timestamps we can store
+				const querySet = this.device.createQuerySet({
+					type: "timestamp",
+					count: capacity,
+				});
+				const queryBuffer = this.device.createBuffer({
+					size: 8 * capacity,
+					usage:
+						GPUBufferUsage.QUERY_RESOLVE |
+						GPUBufferUsage.STORAGE |
+						GPUBufferUsage.COPY_SRC |
+						GPUBufferUsage.COPY_DST,
+				});
+				const resultBuffer = this.device.createBuffer({
+					size: 8 * capacity,
+					usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+				});
 
 				const commandEncoder = this.device.createCommandEncoder();
 
@@ -242,6 +305,7 @@ export class Solver {
 					],
 				});
 
+				commandEncoder.writeTimestamp(querySet, 0);
 				const updatePass = commandEncoder.beginComputePass();
 				updatePass.setPipeline(this.updateRedBlackPipeline);
 				updatePass.setBindGroup(0, updateBindGroup);
@@ -251,7 +315,36 @@ export class Solver {
 				);
 				updatePass.end();
 
+				commandEncoder.writeTimestamp(querySet, 1);
+
+				commandEncoder.resolveQuerySet(
+					querySet,
+					0,
+					capacity,
+					queryBuffer,
+					0
+				);
+
+				commandEncoder.copyBufferToBuffer(
+					queryBuffer,
+					0,
+					resultBuffer,
+					0,
+					8 * capacity
+				);
+
 				this.device.queue.submit([commandEncoder.finish()]);
+
+				await resultBuffer.mapAsync(GPUMapMode.READ);
+				const timestamps = new BigUint64Array(
+					resultBuffer.getMappedRange()
+				);
+				const durationNs = Number(
+					timestamps[capacity - 2] - timestamps[0]
+				);
+				const durationMs = durationNs / 1_000_000;
+				duration += durationMs;
+				resultBuffer.unmap();
 
 				// Swap textures for next iteration
 				[reconstructionRead, reconstructionWrite] = [
@@ -266,7 +359,6 @@ export class Solver {
 			}
 		}
 
-		// Return final result
 		const outputBuffer = this.device.createBuffer({
 			size: this.width * this.height * 16,
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -294,10 +386,8 @@ export class Solver {
 		const arrayBuffer = outputBuffer.getMappedRange();
 		const floatData = new Float32Array(arrayBuffer.slice(0));
 
-		// Convert to Uint8Array for display (optional)
 		const resultImage = new Uint8Array(this.width * this.height * 4);
 		for (let i = 0; i < floatData.length; i += 4) {
-			// Simple normalization for display
 			resultImage[i] = Math.max(0, Math.min(255, floatData[i] * 255));
 			resultImage[i + 1] = Math.max(
 				0,
@@ -311,6 +401,9 @@ export class Solver {
 		}
 
 		outputBuffer.unmap();
+
+		console.log("SOR time: ", duration);
+		console.log("SOR average time per iteration", duration / this.maxIterations);
 
 		return resultImage;
 	}
