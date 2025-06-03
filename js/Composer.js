@@ -1,3 +1,5 @@
+import { saveTextureToPNG } from "./Utils";
+
 export class Composer {
 	constructor(document, canvas, device, format) {
         this.document = document;
@@ -12,9 +14,30 @@ export class Composer {
         this.depthPoints = [];
         this.reconstructions = [];
         this.sdfs = [];
+		this.depths = [];
 
         this.backgroundTexture = null;
         this.compositeResult = null;
+	}
+
+    async createCompositePipeline() {
+		const compositeCode = await fetch("./shaders/composite.wgsl").then(
+			(response) => response.text()
+		);
+
+		const compositeModule = this.device.createShaderModule({
+			code: compositeCode,
+		});
+
+		const compositePipeline = this.device.createComputePipeline({
+			compute: {
+				module: compositeModule,
+				entryPoint: "main",
+			},
+			layout: "auto",
+		});
+
+		return compositePipeline;
 	}
 
     createPipeline() {
@@ -341,11 +364,224 @@ export class Composer {
             );
         }
     }
-    
-    async addLayers(reconstruction, sdf, points) {
-        this.depthPoints.push(points);
-        this.reconstructions.push(reconstruction);
-        this.sdfs.push(sdf);
-    }
 
+    async addLayers(sdf, reconstruction, points, depth) {
+		const reconstructionTexture = this.device.createTexture({
+			size: [this.width, this.height],
+			format: "rgba32float",
+			usage:
+				GPUTextureUsage.TEXTURE_BINDING |
+				GPUTextureUsage.COPY_DST |
+				GPUTextureUsage.COPY_SRC |
+				GPUTextureUsage.STORAGE_BINDING,
+		});
+		const sdfTexture = this.device.createTexture({
+			size: [this.width, this.height],
+			format: "rgba32float",
+			usage:
+				GPUTextureUsage.TEXTURE_BINDING |
+				GPUTextureUsage.COPY_DST |
+				GPUTextureUsage.COPY_SRC |
+				GPUTextureUsage.STORAGE_BINDING,
+		});
+		const pointsTexture = this.device.createTexture({
+			size: [this.width, this.height],
+			format: "rgba32float",
+			usage:
+				GPUTextureUsage.TEXTURE_BINDING |
+				GPUTextureUsage.COPY_DST |
+				GPUTextureUsage.COPY_SRC |
+				GPUTextureUsage.STORAGE_BINDING,
+		});
+
+		const commandEncoder = this.device.createCommandEncoder();
+		commandEncoder.copyTextureToTexture(
+			{ texture: reconstruction },
+			{ texture: reconstructionTexture },
+			[this.width, this.height]
+		);
+
+		commandEncoder.copyTextureToTexture(
+			{ texture: sdf },
+			{ texture: sdfTexture },
+			[this.width, this.height]
+		);
+		commandEncoder.copyTextureToTexture(
+			{ texture: points },
+			{ texture: pointsTexture },
+			[this.width, this.height]
+		);
+		this.device.queue.submit([commandEncoder.finish()]);
+
+		this.depthPoints.push(pointsTexture);
+		this.reconstructions.push(reconstructionTexture);
+		this.sdfs.push(sdfTexture);
+		this.depths.push(depth);
+	}
+
+	async compositeDepths() {
+		const reconstructionTextures = this.device.createTexture({
+			size: {
+				width: this.width,
+				height: this.height,
+				depthOrArrayLayers: this.reconstructions.length,
+			},
+			format: "rgba32float",
+			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+		});
+
+		const sdfTextures = this.device.createTexture({
+			size: {
+				width: this.width,
+				height: this.height,
+				depthOrArrayLayers: this.sdfs.length,
+			},
+			format: "rgba32float",
+			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+		});
+
+		const pointsTexture = this.device.createTexture({
+			size: {
+				width: this.width,
+				height: this.height,
+				depthOrArrayLayers: this.depthPoints.length,
+			},
+			format: "rgba32float",
+			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+		});
+
+		const outputTexture = this.device.createTexture({
+			size: [this.width, this.height],
+			format: "rgba32float",
+			usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.STORAGE_BINDING,
+		});
+
+		const uniformData = new ArrayBuffer(12);
+		const uniformView = new Uint32Array(uniformData);
+		uniformView[0] = this.width;
+		uniformView[1] = this.height;
+		uniformView[2] = this.reconstructions.length;
+
+		const uniformBuffer = this.device.createBuffer({
+			size: 12,
+			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+		});
+		this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
+
+		const commandEncoder = this.device.createCommandEncoder();
+
+		for (let i = 0; i < this.reconstructions.length; i++) {
+			commandEncoder.copyTextureToTexture(
+				{ texture: this.reconstructions[i] },
+				{
+					texture: reconstructionTextures,
+					origin: { x: 0, y: 0, z: i },
+				},
+				[this.width, this.height, 1]
+			);
+			commandEncoder.copyTextureToTexture(
+				{ texture: this.sdfs[i] },
+				{ texture: sdfTextures, origin: { x: 0, y: 0, z: i } },
+				[this.width, this.height, 1]
+			);
+			commandEncoder.copyTextureToTexture(
+				{ texture: this.depthPoints[i] },
+				{ texture: pointsTexture, origin: { x: 0, y: 0, z: i } },
+				[this.width, this.height, 1]
+			);
+		}
+
+		const depthsBuffer = this.device.createBuffer({
+			size: this.depthPoints.length * 4,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+		});
+
+		const compositePipeline = await this.createCompositePipeline();
+
+		const textureBindGroup = this.device.createBindGroup({
+			layout: compositePipeline.getBindGroupLayout(0),
+			entries: [
+				{
+					binding: 0,
+					resource: reconstructionTextures.createView(),
+				},
+				{
+					binding: 1,
+					resource: sdfTextures.createView(),
+				},
+				{
+					binding: 2,
+					resource: pointsTexture.createView(),
+				},
+				{
+					binding: 3,
+					resource: outputTexture.createView(),
+				},
+			],
+		});
+
+		const uniformBindGroup = this.device.createBindGroup({
+			layout: compositePipeline.getBindGroupLayout(1),
+			entries: [
+				{
+					binding: 0,
+					resource: { buffer: uniformBuffer },
+				},
+				{
+					binding: 2,
+					resource: { buffer: depthsBuffer },
+				},
+			],
+		});
+
+		const computePass = commandEncoder.beginComputePass();
+		computePass.setPipeline(compositePipeline);
+		computePass.setBindGroup(0, textureBindGroup);
+		computePass.setBindGroup(1, uniformBindGroup);
+		computePass.dispatchWorkgroups(
+			Math.ceil(this.width / 8),
+			Math.ceil(this.height / 8)
+		);
+		computePass.end();
+
+		const outputBuffer = this.device.createBuffer({
+			size: this.width * this.height * 4 * 4,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
+
+		commandEncoder.copyTextureToBuffer(
+			{
+				texture: outputTexture,
+				mipLevel: 0,
+				origin: { x: 0, y: 0, z: 0 },
+			},
+			{
+				buffer: outputBuffer,
+				bytesPerRow: this.width * 16,
+				rowsPerImage: this.height,
+			},
+			[this.width, this.height, 1]
+		);
+
+		this.device.queue.submit([commandEncoder.finish()]);
+
+		// Map the output buffer to read the data
+		await outputBuffer.mapAsync(GPUMapMode.READ);
+		const outputData = new Float32Array(outputBuffer.getMappedRange());
+
+		saveTextureToPNG(outputData, this.width, this.height, "output.png");
+
+		// Clean up temporary resources
+		outputBuffer.unmap();
+
+		reconstructionTextures.destroy();
+		sdfTextures.destroy();
+		pointsTexture.destroy();
+		outputTexture.destroy();
+		uniformBuffer.destroy();
+
+		this.reconstructions = [];
+		this.sdfs = [];
+		this.depthPoints = [];
+	}
 }
