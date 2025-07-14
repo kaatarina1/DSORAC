@@ -7,7 +7,7 @@ export class Solver {
 		this.jacobianPipeline = null;
 		this.residualPipeline = null;
 		this.updateRedBlackPipeline = null;
-		this.maxIterations = 1000;
+		this.maxIterations = 5000;
 	}
 
 	async createJacobianPipeline() {
@@ -402,8 +402,8 @@ export class Solver {
 
 		outputBuffer.unmap();
 
-		console.log("SOR time: ", duration);
-		console.log("SOR average time per iteration", duration / this.maxIterations);
+		// console.log("SOR time: ", duration);
+		// console.log("SOR average time per iteration", duration / this.maxIterations);
 
 		return resultImage;
 	}

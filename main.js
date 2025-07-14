@@ -14,7 +14,7 @@ import { Evaluation } from "./js/Evaluation.js";
 const adapter = await navigator.gpu.requestAdapter();
 const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
 const device = await adapter?.requestDevice({
-	requiredFeatures: hasBGRA8unormStorage ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable"] : ["float32-filterable", "float32-blendable"],
+	requiredFeatures: hasBGRA8unormStorage ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable", "timestamp-query"] : ["float32-filterable", "float32-blendable", "timestamp-query"],
 });
 const canvas = document.querySelector("canvas");
 const context = canvas.getContext("webgpu");
@@ -278,9 +278,9 @@ document.addEventListener("keydown", async (event) => {
 
 		let depthMap = new DepthMap(canvas, device, depthTexture);
 		let depthValues = await depthMap.groupDepthIntoBins();
-		// depthValues.reverse();
+		depthValues.reverse();
 
-		for (let i = 0; i < 6; i++) {
+		for (let i = 0; i < depthValues.length; i++) {
 			console.log(i);
 			await renderPointsInDepthRange(
 				depthValues[i][0],
@@ -304,23 +304,29 @@ document.addEventListener("keydown", async (event) => {
 	if (event.key === "E" || event.key === "e") {
 		const startTime = performance.now();
 
+		// let orig_images = [
+		// 	"../data/images/image3.png",
+		// ];
+		// let rec_images = [
+		// 	"../data/images/image3_50_alpha.png",
+		// 	"../data/images/image3_80_alpha.png",
+		// 	"../data/images/image3_90_alpha.png",
+		// 	"../data/images/image3_95_alpha.png",
+		// 	"../data/images/image3_99_alpha.png",
+		// ];
+
 		let orig_images = [
-			"../data/images/image2.png",
 			"../data/images/image3.png",
 		];
 		let rec_images = [
-			"../data/images/image2_50_alpha.png",
-			"../data/images/image3_50_alpha.png",
-			"../data/images/image2_80_alpha.png",
-			"../data/images/image3_80_alpha.png",
-			"../data/images/image2_90_alpha.png",
-			"../data/images/image3_90_alpha.png",
-			"../data/images/image2_95_alpha.png",
-			"../data/images/image3_95_alpha.png",
-			"../data/images/image2_99_alpha.png",
-			"../data/images/image3_99_alpha.png",
+			"../data/images/image4.png",
+			"../data/images/image4_50_alpha.png",
+			"../data/images/image4_90_alpha.png",
+			"../data/images/image4_80_alpha.png",
+			"../data/images/image4_95_alpha.png",
+			"../data/images/image4_99_alpha.png",
 		];
-		let maxIterations = [10, 50, 100, 500, 1000, 2000, 3000, 3500, 5000];
+		let maxIterations = [2000];
 
 		// console.log("--------------- Jacobi --------------------");
 		// for (let j = 0; j < rec_images.length; j++) {
@@ -339,7 +345,7 @@ document.addEventListener("keydown", async (event) => {
 		// 			maxIterations[i],
 		// 			0,
 		// 			0,
-		// 			orig_images[j % 2],
+		// 			orig_images[0],
 		// 			rec_images[j]
 		// 		);
 		// 		let psnr = await evaluator.evaluate_jacobi();
@@ -364,7 +370,7 @@ document.addEventListener("keydown", async (event) => {
 		// 			maxIterations[i],
 		// 			0,
 		// 			0,
-		// 			orig_images[j % 2],
+		// 			orig_images[0],
 		// 			rec_images[j]
 		// 		);
 		// 		let psnr = await evaluator.evaluate_sor();
@@ -372,53 +378,53 @@ document.addEventListener("keydown", async (event) => {
 		// 	}
 		// }
 
-		let nSoves = [2, 5, 10, 20];
-		let nSmooths = [5, 10, 20, 50];
-		for (let j = 0; j < rec_images.length; j++) {
-			console.log("IMAGE ", rec_images[j]);
-			for (let i = 0; i < nSoves.length; i++) {
-				console.log(
-					"Reconstruction evaluation for ",
-					nSoves[i],
-					" nSolves"
-				);
-				for (let k = 0; k < nSmooths.length; k++) {
-					console.log(
-						"Reconstruction evaluation for ",
-						nSmooths[k],
-						" nSmooth"
-					);
-					const evaluator = new Evaluation(
-						device,
-						canvas,
-						canvas.width,
-						canvas.height,
-						0,
-						nSoves[i],
-						nSmooths[k],
-						orig_images[j % 2],
-						rec_images[j]
-					);
-					let psnr = await evaluator.evaluate_multigrid();
-					console.log("PSNR = ", psnr);
-				}
-			}
-		}
+		let nSoves = [20];
+		let nSmooths = [50];
+		// for (let j = 0; j < rec_images.length; j++) {
+		// 	console.log("IMAGE ", rec_images[j]);
+		// 	for (let i = 0; i < nSoves.length; i++) {
+		// 		console.log(
+		// 			"Reconstruction evaluation for ",
+		// 			nSoves[i],
+		// 			" nSolves"
+		// 		);
+		// 		for (let k = 0; k < nSmooths.length; k++) {
+		// 			console.log(
+		// 				"Reconstruction evaluation for ",
+		// 				nSmooths[k],
+		// 				" nSmooth"
+		// 			);
+		// 			const evaluator = new Evaluation(
+		// 				device,
+		// 				canvas,
+		// 				canvas.width,
+		// 				canvas.height,
+		// 				0,
+		// 				nSoves[i],
+		// 				nSmooths[k],
+		// 				orig_images[0],
+		// 				rec_images[j]
+		// 			);
+		// 			let psnr = await evaluator.evaluate_multigrid();
+		// 			console.log("PSNR = ", psnr);
+		// 		}
+		// 	}
+		// }
 
-		// const evaluator = new Evaluation(
-		// 	device,
-		// 	canvas,
-		// 	canvas.width,
-		// 	canvas.height,
-		// 	maxIterations[5],
-		// 	nSoves[2],
-		// 	nSmooths[3],
-		// 	orig_images[0],
-		// 	rec_images[0]
-		// );
+		const evaluator = new Evaluation(
+			device,
+			canvas,
+			canvas.width,
+			canvas.height,
+			10000,
+			nSoves[0],
+			nSmooths[0],
+			orig_images[0],
+			rec_images[4]
+		);
 		// let psnr = await evaluator.evaluate_jacobi();
 		// let psnr2 = await evaluator.evaluate_sor();
-		// await evaluator.evaluate_multigrid();
+		await evaluator.evaluate_multigrid();
 	}
 });
 
@@ -562,15 +568,15 @@ async function renderPointsInDepthRange(minDepth, maxDepth) {
 	// 	);
 	// }
 
-	// let solver = new Solver(canvas, device);
-	// let image = await solver.sorRedBlack(
-	// 	captureTexture,
-	// 	reconstructionRead,
-	// 	reconstructionWrite
-	// );
+	let solver = new Solver(canvas, device);
+	let image = await solver.sorRedBlack(
+		captureTexture,
+		reconstructionRead,
+		reconstructionWrite
+	);
 
-	let multigridSolver = new MultigridSolver(canvas, device);
-	let image = await multigridSolver.multigridSolve(captureTexture);
+	// let multigridSolver = new MultigridSolver(canvas, device);
+	// let image = await multigridSolver.multigridSolve(captureTexture);
 
 	// let cgSolver = new ConjugateGradientSolver(canvas, device);
 	// let image = await cgSolver.conjGradientSolve(captureTexture, reconstructionRead, reconstructionWrite);

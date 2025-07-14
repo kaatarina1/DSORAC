@@ -2,7 +2,7 @@ import { Solver } from "./Solvers";
 import { convertTexture } from "./Utils";
 
 export class MultigridSolver {
-	constructor(canvas, device, levels = 10, nSmooth = 50, nSolve = 20) {
+	constructor(canvas, device, levels = 10, nSmooth = 20, nSolve = 10) {
 		this.canvas = canvas;
 		this.device = device;
 		this.levels = levels;

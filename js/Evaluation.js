@@ -126,11 +126,15 @@ export class Evaluation {
 		solver.height = rec.height;
 		solver.maxIterations = this.maxIterations;
 
-		var image = await solver.jacobian(
-			captureTexture,
-			reconstructionRead,
-			reconstructionWrite
-		);
+		var image;
+		for(var i = 0; i < 100; i++) {
+			image = await solver.jacobian(
+				captureTexture,
+				reconstructionRead,
+				reconstructionWrite
+			);
+		}
+		
 
 		await saveTextureToPNG(
 			image,
@@ -312,12 +316,12 @@ export class Evaluation {
 
 		var image = await multigridSolver.multigridSolve(captureTexture);
 
-		// await saveTextureToPNG(
-		// 	image,
-		// 	rec.width,
-		// 	rec.height,
-		// 	`${this.image_file}_multigrid_${this.nSolve}_${this.nSmooth}.png`
-		// );
+		await saveTextureToPNG(
+			image,
+			rec.width,
+			rec.height,
+			`${this.image_file}_multigrid_${this.nSolve}_${this.nSmooth}.png`
+		);
 
 		let psnr = await this.calculatePSNR(
 			origTexture,

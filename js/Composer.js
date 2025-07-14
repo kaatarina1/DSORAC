@@ -492,9 +492,25 @@ export class Composer {
 		}
 
 		const depthsBuffer = this.device.createBuffer({
+			size: this.depthPoints.length  * 4,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+		});
+        this.device.queue.writeBuffer(depthsBuffer, 0, new Float32Array(this.depths))
+
+        const iDepthsBuffer = this.device.createBuffer({
 			size: this.depthPoints.length * 4,
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 		});
+
+        const iColorXBuffer = this.device.createBuffer({
+			size: this.depthPoints.length * 4,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+		});
+
+        const iColorYBuffer = this.device.createBuffer({
+			size: this.depthPoints.length * 4,
+			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+		})
 
 		const compositePipeline = await this.createCompositePipeline();
 
@@ -528,8 +544,20 @@ export class Composer {
 					resource: { buffer: uniformBuffer },
 				},
 				{
-					binding: 2,
+					binding: 1,
 					resource: { buffer: depthsBuffer },
+				},
+				{
+					binding: 2,
+					resource: { buffer: iDepthsBuffer },
+				},
+				{
+					binding: 3,
+					resource: { buffer: iColorXBuffer },
+				},
+				{
+					binding: 4,
+					resource: { buffer: iColorYBuffer },
 				},
 			],
 		});
