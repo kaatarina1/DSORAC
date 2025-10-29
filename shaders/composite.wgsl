@@ -50,12 +50,15 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     // var indexC = array<vec2u, 2>(
     //     vec2u(0u, 0u), vec2u(0u, 0u)
     // );
-    var indexD = array<u32, 30>(
+    var indexD = array<u32, 40>(
+            0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
             0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
             0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
             0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u
         );
-    var indexC = array<vec2u, 30>(
+    var indexC = array<vec2u, 40>(
+        vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u),
+        vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u),
         vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u),
         vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u),
         vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u), vec2u(0u, 0u),
@@ -73,7 +76,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     for (var i = 0u; i < numberOfLayers; i++) {
         let sdf = textureLoad(sdfTextures, index, i, 0);
         let depth = depths[i];
-        let w = 1e-30 + exp(-(sdf.a * sdf.a));
+        let w = 1e-30 + exp(-(sdf.a * sdf.a * 100));
         let distance = 1 / w;
 
         indexD[count] = i;
@@ -82,12 +85,16 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // atomicStore(&iColorX[count], index.x);
         // atomicStore(&iColorY[count], index.y);
         count += 1;
-        meanSum += depth;
+        meanSum += depth * depth;
         sigmaSum += sdf.a * sdf.a;
     }
 
-    let sqrtSigma = sqrt(sigmaSum);
+    // let sqrtSigma = sqrt(sigmaSum);
 
+    let sqrtSigma = sqrt(sigmaSum + 1e-5);
+
+    let fov = 1.0;
+    let screenHeight = f32(size.y);
     var color = vec4f(1.0, 1.0, 1.0, 1.0);
     for (var i = 0u; i < u32(count); i++) {
         let indexDepth = indexD[i];
@@ -97,15 +104,21 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // let indexColorY = atomicLoad(&iColorY[i]);
         // let coord = vec2u(indexColorX, indexColorY);
         let depth = depths[indexDepth];
-        let mean = depth - (meanSum - depth);
+        let mean = (meanSum) - depth;
         let zScore = (0 - mean) / sqrtSigma;
 
-        let p = standard_normal_cdf(zScore);
+        // let p = standard_normal_cdf(zScore);
+        let p = 0.95;
+        
+        let projFactor = (1.0 / tan(fov /2.0)) / -(1-depth);
+        let pixelToWorld = screenHeight / 2.0;
+        let radius = f32(i) * 0.9 / (projFactor * pixelToWorld);
 
         var col = textureLoad(reconstructionTextures, indexColor, indexDepth, 0);
         let sdf = textureLoad(sdfTextures, indexColor, indexDepth, 0);
 
-        let alpha = exp(-(700 * sdf.a * sdf.a));
+        let normalizedDist = (sdf.a * 0.5) / (radius + 1e-5);
+        let alpha = exp(-(normalizedDist * normalizedDist));
 
         col.a *= alpha;
         col = vec4f(col.rgb * col.a, col.a);

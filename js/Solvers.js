@@ -354,7 +354,7 @@ export class Solver {
 			}
 
 			// Optional: Add progress logging
-			if (iteration % 100 === 0) {
+			if (iteration % 1000 === 0) {
 				console.log(`Completed ${iteration} iterations`);
 			}
 		}

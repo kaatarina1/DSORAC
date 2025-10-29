@@ -597,7 +597,9 @@ export class Composer {
 		await outputBuffer.mapAsync(GPUMapMode.READ);
 		const outputData = new Float32Array(outputBuffer.getMappedRange());
 
-		saveTextureToPNG(outputData, this.width, this.height, "output.png");
+        const copiedData = new Float32Array(outputData);
+
+		saveTextureToPNG(copiedData, this.width, this.height, "output.png");
 
 		// Clean up temporary resources
 		outputBuffer.unmap();
@@ -611,5 +613,8 @@ export class Composer {
 		this.reconstructions = [];
 		this.sdfs = [];
 		this.depthPoints = [];
+		this.depths = [];
+
+        return copiedData;
 	}
 }

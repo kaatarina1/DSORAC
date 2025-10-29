@@ -37,6 +37,7 @@ export class LasLoader {
         laszip.open(filePtr, file.byteLength);
 
         const positions = new Float32Array(laszip.getCount() * 3);
+        const colorsRGB = new Float32Array(laszip.getCount() * 3);
         const colors = new Uint32Array(laszip.getCount());
 
         let minX = Infinity,
@@ -56,8 +57,8 @@ export class LasLoader {
             );
 
             const x = pointBuffer.getInt32(0, true) * scale[0] + offset[0];
-            const y = pointBuffer.getInt32(4, true) * scale[1] + offset[1];
-            const z = pointBuffer.getInt32(8, true) * scale[2] + offset[2];
+            const z = pointBuffer.getInt32(4, true) * scale[1] + offset[1];
+            const y = pointBuffer.getInt32(8, true) * scale[2] + offset[2];
 
             const r = pointBuffer.getUint16(28, true) / 65535;
             const g = pointBuffer.getUint16(30, true) / 65535;
@@ -71,6 +72,7 @@ export class LasLoader {
             maxZ = Math.max(maxZ, z);
 
             positions.set([x, y, z], i * 3);
+            colorsRGB.set([r, g, b], i * 3);
             const packedColor =
                 ((Math.round(r * 255) & 0xff) << 0) | // Red channel in the least significant byte
                 ((Math.round(g * 255) & 0xff) << 8) | // Green channel in the second byte
@@ -95,6 +97,6 @@ export class LasLoader {
         LazPerf._free(dataPtr);
         laszip.delete();
 
-        return {positions, colors}
+        return {positions, colors, colorsRGB, scaleFactor}
     }
 }
