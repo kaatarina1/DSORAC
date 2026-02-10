@@ -599,7 +599,7 @@ export class Composer {
 
         const copiedData = new Float32Array(outputData);
 
-		saveTextureToPNG(copiedData, this.width, this.height, "output.png");
+		// saveTextureToPNG(copiedData, this.width, this.height, "output.png");
 
 		// Clean up temporary resources
 		outputBuffer.unmap();
