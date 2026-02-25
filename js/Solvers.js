@@ -354,9 +354,9 @@ export class Solver {
 			}
 
 			// Optional: Add progress logging
-			if (iteration % 1000 === 0) {
-				console.log(`Completed ${iteration} iterations`);
-			}
+			// if (iteration % 1000 === 0) {
+			// 	console.log(`Completed ${iteration} iterations`);
+			// }
 		}
 
 		const outputBuffer = this.device.createBuffer({
