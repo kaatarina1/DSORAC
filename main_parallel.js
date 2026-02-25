@@ -10,12 +10,23 @@ import WorkerScript from './imageGenerationWorker.js?worker';
 const CONFIG = {
     canvasWidth: 1024,
     canvasHeight: 512,
-    workerCount: Math.min(8, navigator.hardwareConcurrency || 6),
-    hemisphereRadius: 0.75,
-    hemisphereSamples: 16,
+    workerCount: Math.min(7, navigator.hardwareConcurrency || 6),
+    batchSize: 16,
+    reconstructionColorOrder: "rgb",
+    simpleRenderingColorOrder: "bgr",
+    hemisphereRadii: [0.17/*, 0.35, 0.95*/],
+    imagesPerCombination: 7,
     lasFile: "./data/cropped_filtered_1.las",
     targetPositions: [
         [0, -0.17, 0],
+        // [0.1, -0.17, 0],
+        // [-0.1, -0.17, 0],
+        // [0, -0.17, 0.1],
+        // [0, -0.17, -0.1],
+        // [0.1, -0.17, 0.1],
+        // [-0.1, -0.17, 0.1],
+        // [0.1, -0.17, -0.1],
+        // [-0.1, -0.17, -0.1],
     ]
 };
 
@@ -232,6 +243,7 @@ const device = await adapter?.requestDevice({
 });
 
 const canvas = document.querySelector("canvas");
+const reconstructionToggle = document.getElementById("reconstruction-toggle");
 canvas.width = CONFIG.canvasWidth;
 canvas.height = CONFIG.canvasHeight;
 
@@ -250,6 +262,19 @@ const colorsRGB = lasData.colorsRGB;
 const scaleFactor = lasData.scaleFactor;
 
 console.log(`Loaded ${positions.length / 3} points`);
+
+// Izračunamo bounding box oblaka točk
+let bbMin = [Infinity, Infinity, Infinity];
+let bbMax = [-Infinity, -Infinity, -Infinity];
+for (let i = 0; i < positions.length; i += 3) {
+    bbMin[0] = Math.min(bbMin[0], positions[i]);
+    bbMin[1] = Math.min(bbMin[1], positions[i + 1]);
+    bbMin[2] = Math.min(bbMin[2], positions[i + 2]);
+    bbMax[0] = Math.max(bbMax[0], positions[i]);
+    bbMax[1] = Math.max(bbMax[1], positions[i + 1]);
+    bbMax[2] = Math.max(bbMax[2], positions[i + 2]);
+}
+console.log("Point cloud bounding box:", bbMin, bbMax);
 
 // Naložimo shaderje in ustvarimo render pipeline
 const renderingCode = await fetch("./shaders/rendering.wgsl").then(r => r.text());
@@ -272,6 +297,25 @@ const renderingPipeline = device.createRenderPipeline({
 
 const camPositionHelper = new CameraPosition(canvas, device, renderingPipeline);
 
+// Matrix buffers: MVP (binding 0) + view matrix (binding 1) in group 1
+const mvpBuffer = device.createBuffer({
+    size: 64,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
+const viewMatrixBuffer = device.createBuffer({
+    size: 64,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
+const matricesBindGroup = device.createBindGroup({
+    layout: renderingPipeline.getBindGroupLayout(1),
+    entries: [
+        { binding: 0, resource: { buffer: mvpBuffer } },
+        { binding: 1, resource: { buffer: viewMatrixBuffer } },
+    ],
+});
+
 // Camera controls
 let cameraPosition = [0, 0, 0];
 let cameraTarget = [0, -0.17, 0];
@@ -279,7 +323,7 @@ let yaw = 0;
 let pitch = 0;
 let distance = 0.2;
 
-const pointerController = new PointerController();
+const pointerController = new PointerController(canvas);
 
 pointerController.addEventListener("pointermove", (e) => {
     const dx = e.movementX;
@@ -362,7 +406,19 @@ document.addEventListener("keydown", async (event) => {
 
 async function generateImagesParallel() {
     const startTime = performance.now();
-    console.log("🚀 Starting parallel generation with batching...");
+    const useReconstruction = reconstructionToggle ? reconstructionToggle.checked : true;
+    const useParallelBatching = useReconstruction;
+    const activeWorkerCount = useParallelBatching ? CONFIG.workerCount : 1;
+    const activeBatchSize = useParallelBatching ? CONFIG.batchSize : Number.MAX_SAFE_INTEGER;
+    const colorOrder = useReconstruction
+        ? CONFIG.reconstructionColorOrder
+        : CONFIG.simpleRenderingColorOrder;
+
+    console.log(
+        `🚀 Starting generation (${useParallelBatching ? "parallel + batched" : "single worker, no batching"})...`
+    );
+    console.log(`Capture mode: ${useReconstruction ? "reconstruction" : "point cloud only"}`);
+    console.log(`Output color order: ${colorOrder.toUpperCase()}`);
 
     try {
         // Najprej generiramo vse pozicije kamer in naloge, preden začnemo z delom workerjev
@@ -370,28 +426,35 @@ async function generateImagesParallel() {
         let imageIndex = 0;
 
         for (const target of CONFIG.targetPositions) {
-            const poses = camPositionHelper.generateFibonacciHemisphereAroundCamera(
-                CONFIG.hemisphereSamples,
-                CONFIG.hemisphereRadius,
-                target
-            );
-            console.log(`Generated ${poses.length} camera poses around target ${target}`);
-
-            for (const pos of poses) {
-                const dist = Math.sqrt(
-                    Math.pow(pos[0] - target[0], 2) +
-                    Math.pow(pos[1] - target[1], 2) +
-                    Math.pow(pos[2] - target[2], 2)
+            for (const radius of CONFIG.hemisphereRadii) {
+                const oversampledCount = Math.max(
+                    CONFIG.imagesPerCombination * 2,
+                    CONFIG.imagesPerCombination + 1
                 );
 
-                if (dist < 0.1) continue;
+                const poses = camPositionHelper.generateFibonacciHemisphereAroundCamera(
+                    oversampledCount,
+                    radius,
+                    target
+                );
 
-                allTasks.push({
-                    cameraPosition: pos,
-                    target: target,
-                    imageIndex: imageIndex++,
-                    targetPosition: CONFIG.targetPositions[0]
-                });
+                const selectedPoses = poses.slice(0, CONFIG.imagesPerCombination);
+
+                console.log(
+                    `Generated ${selectedPoses.length}/${CONFIG.imagesPerCombination} camera poses around target ${target} at radius ${radius}`
+                );
+
+                for (const pos of selectedPoses) {
+                    allTasks.push({
+                        cameraPosition: pos,
+                        target: target,
+                        imageIndex: imageIndex++,
+                        targetPosition: target,
+                        useReconstruction,
+                        colorOrder,
+                        radius
+                    });
+                }
             }
         }
 
@@ -399,20 +462,19 @@ async function generateImagesParallel() {
         
         // Initializiramo ZIP arhiv za shranjevanje rezultatov
         zip = new JSZip();
-        
-        const BATCH_SIZE = 20;
+
         const allResults = [];
-        const numBatches = Math.ceil(allTasks.length / BATCH_SIZE);
+        const numBatches = Math.ceil(allTasks.length / activeBatchSize);
 
         for (let batch = 0; batch < numBatches; batch++) {
-            const start = batch * BATCH_SIZE;
-            const end = Math.min(start + BATCH_SIZE, allTasks.length);
+            const start = batch * activeBatchSize;
+            const end = Math.min(start + activeBatchSize, allTasks.length);
             const batchTasks = allTasks.slice(start, end);
             
             console.log(`\n📦 Processing batch ${batch + 1}/${numBatches} (images ${start + 1}-${end})...`);
             
             // Ustvarimo nov WorkerPool za vsak batch, da zagotovimo popolno sprostitev GPU virov po vsakem batchu
-            workerPool = new WorkerPool(CONFIG.workerCount);
+            workerPool = new WorkerPool(activeWorkerCount);
             await workerPool.initialize({
                 width: CONFIG.canvasWidth,
                 height: CONFIG.canvasHeight,
@@ -439,16 +501,18 @@ async function generateImagesParallel() {
             allResults.push(...batchResults);
             
             console.log(`📊 Batch ${batch + 1} results: ${batchResults.length}/${batchTasks.length} images received`);
-            
-            console.log(`⏳ Waiting for GPU and message queue to clear...`);
-            await new Promise(resolve => setTimeout(resolve, 4000));
+
+            if (useParallelBatching) {
+                console.log(`⏳ Waiting for GPU and message queue to clear...`);
+                await new Promise(resolve => setTimeout(resolve, 4000));
+            }
             
             // Ustavimo workerje, da sprostimo GPU vire
             await workerPool.shutdown();
             console.log(`✓ Batch ${batch + 1} complete, workers shut down`);
             
             // Dodamo majhen zamik pred začetkom naslednjega batcha, da zagotovimo, da so vsi GPU viri sproščeni
-            if (batch < numBatches - 1) {
+            if (useParallelBatching && batch < numBatches - 1) {
                 console.log(`⏳ Cooling down GPU before next batch...`);
                 await new Promise(resolve => setTimeout(resolve, 2000));
             }
@@ -508,8 +572,8 @@ async function generateImagesParallel() {
 📊 Images: ${successfulResults.length}/${allTasks.length}
 ⏱️  Time: ${totalTime.toFixed(1)} minutes
 ⚡ Avg: ${successfulResults.length > 0 ? (totalTime * 60 / successfulResults.length).toFixed(1) : 'N/A'}s/image
-🚀 Workers: ${CONFIG.workerCount}
-📦 Batches: ${numBatches} (20 images each)
+🚀 Workers: ${activeWorkerCount}
+📦 Batches: ${numBatches} (${useParallelBatching ? activeBatchSize : allTasks.length} images each)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
         `);
 
@@ -524,6 +588,7 @@ async function generateImagesParallel() {
 
 async function exportResults(capturedData) {
     // Preverimo ali je ZIP objekt veljaven pred uporabo
+    console.log("Exporting results to ZIP...");
     if (!zip) {
         console.error('❌ ZIP object is null - cannot export');
         return;
@@ -537,6 +602,126 @@ async function exportResults(capturedData) {
     saveAs(blob, "export_bundle.zip");
     console.log("✓ Export saved");
 }
+
+// Interactive preview render loop
+const pointByteSize = 16;
+const maxNumberOfPointsPerBuffer = 1024 * 1024;
+const numberOfAllPoints = positions.length / 3;
+const pointclouds = [];
+
+for (let i = 0; i < Math.ceil(numberOfAllPoints / maxNumberOfPointsPerBuffer); i++) {
+    const startIndex = i * maxNumberOfPointsPerBuffer;
+    const numberOfPoints = Math.min(maxNumberOfPointsPerBuffer, numberOfAllPoints - startIndex);
+
+    const pointData = new ArrayBuffer(numberOfPoints * pointByteSize);
+    const pointDataView = new DataView(pointData);
+
+    for (let j = 0; j < numberOfPoints; j++) {
+        const posIndex = (startIndex + j) * 3;
+        const pointOffset = j * pointByteSize;
+        pointDataView.setFloat32(pointOffset, positions[posIndex], true);
+        pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
+        pointDataView.setUint32(pointOffset + 12, colors[startIndex + j], true);
+    }
+
+    const pointBuffer = device.createBuffer({
+        size: numberOfPoints * pointByteSize,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(pointBuffer, 0, pointData);
+
+    const renderingBindGroup = device.createBindGroup({
+        layout: renderingPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: pointBuffer } }],
+    });
+
+    pointclouds.push({ pointBuffer, renderingBindGroup, numberOfPoints });
+}
+
+let depthTexture = device.createTexture({
+    size: [canvas.width, canvas.height],
+    usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    format: "depth32float",
+});
+
+let lastSize = { width: null, height: null };
+
+function frame() {
+    const size = canvas.getBoundingClientRect();
+    if (size.width !== lastSize.width || size.height !== lastSize.height) {
+        canvas.width = lastSize.width = size.width;
+        canvas.height = lastSize.height = size.height;
+        depthTexture.destroy();
+        depthTexture = device.createTexture({
+            size: [canvas.width, canvas.height],
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+            format: "depth32float",
+        });
+    }
+
+    // Compute matrices with tight near/far from bounding box
+    const { viewMatrix, projectionViewMatrix, near, far } =
+        camPositionHelper.computeCameraMatrix(cameraPosition, cameraTarget, canvas, bbMin, bbMax);
+
+    device.queue.writeBuffer(mvpBuffer, 0, new Float32Array(projectionViewMatrix));
+    device.queue.writeBuffer(viewMatrixBuffer, 0, new Float32Array(viewMatrix));
+
+    // Depth range: pass huge range so nothing is clipped in preview
+    const depthRangeBuffer = device.createBuffer({
+        size: 8,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([0, 1e6]));
+    const depthRangeBindGroup = device.createBindGroup({
+        layout: renderingPipeline.getBindGroupLayout(2),
+        entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
+    });
+
+    // Target position — vec4f padded for alignment
+    const targetPosBuf = device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const tp = CONFIG.targetPositions[0];
+    device.queue.writeBuffer(targetPosBuf, 0, new Float32Array([tp[0], tp[1], tp[2], 0.0]));
+    const targetPosBindGroup = device.createBindGroup({
+        layout: renderingPipeline.getBindGroupLayout(3),
+        entries: [{ binding: 0, resource: { buffer: targetPosBuf } }],
+    });
+
+    const commandEncoder = device.createCommandEncoder();
+    const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+            view: context.getCurrentTexture().createView(),
+            loadOp: "clear",
+            clearValue: [0, 0, 0, 0],
+            storeOp: "store",
+        }],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthLoadOp: "clear",
+            depthClearValue: 1,
+            depthStoreOp: "store",
+        },
+    });
+
+    renderPass.setPipeline(renderingPipeline);
+    renderPass.setBindGroup(1, matricesBindGroup);
+    renderPass.setBindGroup(2, depthRangeBindGroup);
+    renderPass.setBindGroup(3, targetPosBindGroup);
+
+    for (const pointcloud of pointclouds) {
+        renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
+        renderPass.draw(pointcloud.numberOfPoints);
+    }
+    renderPass.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+    requestAnimationFrame(frame);
+}
+
+requestAnimationFrame(frame);
 
 console.log(`
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

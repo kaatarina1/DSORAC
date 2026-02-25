@@ -9,7 +9,7 @@ import { CameraPosition } from "./js/CameraPosition.js";
 
 
 // Worker-safe ustvarjanje Blob objekta iz GPU teksture
-async function getBlobWorkerSafe(data, width, height) {
+async function getBlobWorkerSafe(data, width, height, colorOrder = "bgr") {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
     
@@ -40,18 +40,42 @@ async function getBlobWorkerSafe(data, width, height) {
     if (needsScaling) {
         console.log('🎨 Converting from 0-1 range to 0-255');
         for (let i = 0; i < width * height; i++) {
-            pixels[i * 4] = Math.max(0, Math.min(255, Math.floor(data[i * 4] * 255)));
-            pixels[i * 4 + 1] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 1] * 255)));
-            pixels[i * 4 + 2] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 2] * 255)));
-            pixels[i * 4 + 3] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 3] * 255)));
+            const r = Math.max(0, Math.min(255, Math.floor(data[i * 4] * 255)));
+            const g = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 1] * 255)));
+            const b = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 2] * 255)));
+            const a = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 3] * 255)));
+
+            // Podpora za RGB ali BGR vrstni red barv v odvisnosti od vhodnih podatkov
+            if (colorOrder === "rgb") {
+                pixels[i * 4] = r;
+                pixels[i * 4 + 1] = g;
+                pixels[i * 4 + 2] = b;
+            } else {
+                pixels[i * 4] = b;
+                pixels[i * 4 + 1] = g;
+                pixels[i * 4 + 2] = r;
+            }
+            pixels[i * 4 + 3] = a;
         }
     } else {
         console.log('🎨 Data already in 0-255 range, copying directly');
         for (let i = 0; i < width * height; i++) {
-            pixels[i * 4] = Math.max(0, Math.min(255, Math.floor(data[i * 4])));
-            pixels[i * 4 + 1] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 1])));
-            pixels[i * 4 + 2] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 2])));
-            pixels[i * 4 + 3] = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 3])));
+            const r = Math.max(0, Math.min(255, Math.floor(data[i * 4])));
+            const g = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 1])));
+            const b = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 2])));
+            const a = Math.max(0, Math.min(255, Math.floor(data[i * 4 + 3])));
+
+            // Podpora za RGB ali BGR vrstni red barv v odvisnosti od vhodnih podatkov
+            if (colorOrder === "rgb") {
+                pixels[i * 4] = r;
+                pixels[i * 4 + 1] = g;
+                pixels[i * 4 + 2] = b;
+            } else {
+                pixels[i * 4] = b;
+                pixels[i * 4 + 1] = g;
+                pixels[i * 4 + 2] = r;
+            }
+            pixels[i * 4 + 3] = a;
         }
     }
     
@@ -66,6 +90,10 @@ let canvas = null;
 let format = null;
 let deviceLost = false;
 let deviceLostPromise = null;
+
+// Bounding box oblaka točk (izračunano enkrat med inicializacijo)
+let bbMin = [Infinity, Infinity, Infinity];
+let bbMax = [-Infinity, -Infinity, -Infinity];
 
 self.onmessage = async (e) => {
     const { type, data } = e.data;
@@ -142,7 +170,23 @@ async function initializeWorker(config) {
         
         console.log(`📊 Worker loaded ${lasData.positions.length / 3} points`);
         
-        await createPointClouds(lasData.positions, lasData.colors);
+        // Izračunamo bounding box oblaka točk, 
+        // da ga lahko uporabimo za nastavitev near/far 
+        // ravnin kamere in za normalizacijo globin
+        const positions = lasData.positions;
+        bbMin = [Infinity, Infinity, Infinity];
+        bbMax = [-Infinity, -Infinity, -Infinity];
+        for (let i = 0; i < positions.length; i += 3) {
+            bbMin[0] = Math.min(bbMin[0], positions[i]);
+            bbMin[1] = Math.min(bbMin[1], positions[i + 1]);
+            bbMin[2] = Math.min(bbMin[2], positions[i + 2]);
+            bbMax[0] = Math.max(bbMax[0], positions[i]);
+            bbMax[1] = Math.max(bbMax[1], positions[i + 1]);
+            bbMax[2] = Math.max(bbMax[2], positions[i + 2]);
+        }
+        console.log("📐 Point cloud bounding box:", bbMin, bbMax);
+        
+        await createPointClouds(positions, lasData.colors);
         
         console.log(`✅ Worker ready with ${pointclouds.length} point cloud batches`);
 
@@ -201,11 +245,74 @@ async function createPointClouds(positions, colors) {
     }
 }
 
+function createDepthRangeBindGroup(minDepth, maxDepth) {
+    const buf = device.createBuffer({
+        size: 8,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(buf, 0, new Float32Array([minDepth, maxDepth]));
+    return {
+        buffer: buf,
+        bindGroup: device.createBindGroup({
+            layout: renderingPipeline.getBindGroupLayout(2),
+            entries: [{ binding: 0, resource: { buffer: buf } }],
+        }),
+    };
+}
+
+function createTargetPositionBindGroup(pos) {
+    const buf = device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(buf, 0, new Float32Array([pos[0], pos[1], pos[2], 0.0]));
+    return {
+        buffer: buf,
+        bindGroup: device.createBindGroup({
+            layout: renderingPipeline.getBindGroupLayout(3),
+            entries: [{ binding: 0, resource: { buffer: buf } }],
+        }),
+    };
+}
+
+// Combined MVP + view matrix in group(1): binding(0)=MVP, binding(1)=viewMatrix
+function createMatricesBindGroup(projectionViewMatrix, viewMatrix) {
+    const mvpBuf = device.createBuffer({
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(mvpBuf, 0, new Float32Array(projectionViewMatrix));
+
+    const viewBuf = device.createBuffer({
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(viewBuf, 0, new Float32Array(viewMatrix));
+
+    return {
+        mvpBuffer: mvpBuf,
+        viewBuffer: viewBuf,
+        bindGroup: device.createBindGroup({
+            layout: renderingPipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 0, resource: { buffer: mvpBuf } },
+                { binding: 1, resource: { buffer: viewBuf } },
+            ],
+        }),
+    };
+}
+
 async function generateImage(params) {
-    const imageIndex = params.imageIndex; // Shrani index slike
+    const imageIndex = params.imageIndex;
     const camPositionHelper = new CameraPosition(canvas, device, renderingPipeline);
     try {
-        const { cameraPosition, target, targetPosition } = params;
+        const {
+            cameraPosition,
+            target,
+            targetPosition,
+            useReconstruction = true,
+            colorOrder = "bgr",
+        } = params;
 
         // Preveri stanje GPU naprave
         if (deviceLost || !device) {
@@ -215,7 +322,9 @@ async function generateImage(params) {
         // Zagotovimo da je GPU pripravljen
         await device.queue.onSubmittedWorkDone();
 
-        let {viewMatrix, projectionViewMatrix} = camPositionHelper.computeCameraMatrix(cameraPosition, target, canvas);
+        // Izračunamo view in projection matriki
+        let { viewMatrix, projectionViewMatrix, near, far } =
+            camPositionHelper.computeCameraMatrix(cameraPosition, target, canvas, bbMin, bbMax);
 
         const depthTexture = device.createTexture({
             size: [canvas.width, canvas.height],
@@ -223,71 +332,83 @@ async function generateImage(params) {
             format: "depth32float",
         });
 
-        const matrixBuffer = device.createBuffer({
-            size: 64,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        device.queue.writeBuffer(matrixBuffer, 0, projectionViewMatrix);
+        const { bindGroup: matricesBindGroup, mvpBuffer, viewBuffer } =
+            createMatricesBindGroup(projectionViewMatrix, viewMatrix);
 
-        const matrixBindGroup = device.createBindGroup({
-            layout: renderingPipeline.getBindGroupLayout(1),
-            entries: [{ binding: 0, resource: { buffer: matrixBuffer } }],
-        });
+        let outputData;
 
-        await renderFullScene(matrixBindGroup, depthTexture, targetPosition);
+        if (useReconstruction) {
+            await renderFullScene(matricesBindGroup, depthTexture, targetPosition);
 
-        const depthMap = new DepthMap(canvas, device, depthTexture);
-        let depthBins;
-        
-        try {
-            depthBins = await depthMap.groupDepthIntoBins();
-            if (!depthBins || depthBins.length === 0) {
+            const depthMap = new DepthMap(canvas, device, depthTexture);
+            let depthBins;
+            
+            try {
+                depthBins = await depthMap.groupDepthIntoBins({ near, far });
+                if (!depthBins || depthBins.length === 0) {
+                    depthBins = [[0, 0.3], [0.3, 0.6], [0.6, 1.0]];
+                }
+                depthBins.reverse();
+            } catch (error) {
                 depthBins = [[0, 0.3], [0.3, 0.6], [0.6, 1.0]];
             }
-            depthBins.reverse();
-        } catch (error) {
-            depthBins = [[0, 0.3], [0.3, 0.6], [0.6, 1.0]];
-        }
 
-        self.postMessage({
-            type: 'PROGRESS',
-            imageIndex,
-            message: `Calculated ${depthBins.length} depth bins`
-        });
-
-        // Za vsako sliko naredimo novo instanco composer razreda
-        const composer = new Composer(self, canvas, device, format);
-        composer.initializeCompositeTexture();
-        
-        // Zagotovimo, da Composer začne s čistimi podatki
-        composer.reconstructions = [];
-        composer.sdfs = [];
-        composer.depthPoints = [];
-        composer.depths = [];
-        
-        console.log(`🎨 Starting composition with ${depthBins.length} depth bins`);
-
-        for (let i = 0; i < depthBins.length; i++) {
-            const [minDepth, maxDepth] = depthBins[i];
-            await renderPointsInDepthRange(minDepth, maxDepth, matrixBindGroup, depthTexture, composer, targetPosition);
-            
-            console.log(`✓ Layer ${i + 1}/${depthBins.length} added. Composer now has ${composer.reconstructions.length} layers`);
-            
             self.postMessage({
                 type: 'PROGRESS',
                 imageIndex,
-                layer: i,
-                totalLayers: depthBins.length
+                message: `Calculated ${depthBins.length} depth bins (near=${near.toFixed(4)}, far=${far.toFixed(4)})`
             });
-        }
-        
-        console.log(`🎬 Compositing ${composer.reconstructions.length} layers...`);
 
-        // Zagotovimo, da so vsi GPU ukazi zaključeni pred kompozicijo
-        await device.queue.onSubmittedWorkDone();
-        
-        const outputData = await composer.compositeDepths(composer);
-        const blob = await getBlobWorkerSafe(outputData, canvas.width, canvas.height);
+            // Za vsako sliko naredimo novo instanco composer razreda
+            const composer = new Composer(self, canvas, device, format);
+            composer.initializeCompositeTexture();
+            
+            // Zagotovimo, da Composer začne s čistimi podatki
+            composer.reconstructions = [];
+            composer.sdfs = [];
+            composer.depthPoints = [];
+            composer.depths = [];
+            
+            console.log(`🎨 Starting composition with ${depthBins.length} depth bins`);
+
+            for (let i = 0; i < depthBins.length; i++) {
+                const [minDepth, maxDepth] = depthBins[i];
+                await renderPointsInDepthRange(
+                    minDepth, maxDepth, near, far,
+                    matricesBindGroup, depthTexture, composer,
+                    targetPosition
+                );
+                
+                console.log(`✓ Layer ${i + 1}/${depthBins.length} added. Composer now has ${composer.reconstructions.length} layers`);
+                
+                self.postMessage({
+                    type: 'PROGRESS',
+                    imageIndex,
+                    layer: i,
+                    totalLayers: depthBins.length
+                });
+            }
+            
+            console.log(`🎬 Compositing ${composer.reconstructions.length} layers...`);
+
+            // Zagotovimo, da so vsi GPU ukazi zaključeni pred kompozicijo
+            await device.queue.onSubmittedWorkDone();
+            
+            outputData = await composer.compositeDepths(composer);
+
+            if (composer.compositeResult) {
+                composer.compositeResult.destroy();
+            }
+        } else {
+            self.postMessage({
+                type: 'PROGRESS',
+                imageIndex,
+                message: 'Capturing raw point cloud (reconstruction disabled)'
+            });
+            outputData = await capturePointCloudImage(matricesBindGroup, depthTexture, targetPosition);
+        }
+
+        const blob = await getBlobWorkerSafe(outputData, canvas.width, canvas.height, colorOrder);
         
         //Čakamo, da se vse GPU operacije zaključijo
         await device.queue.onSubmittedWorkDone();
@@ -303,12 +424,9 @@ async function generateImage(params) {
         await device.queue.onSubmittedWorkDone();
         
         depthTexture.destroy();
-        matrixBuffer.destroy();
+        mvpBuffer.destroy();
+        viewBuffer.destroy();
         
-        if (composer.compositeResult) {
-            composer.compositeResult.destroy();
-        }
-
         self.postMessage({
             type: 'IMAGE_COMPLETE',
             imageIndex,
@@ -332,28 +450,12 @@ async function generateImage(params) {
     }
 }
 
-async function renderFullScene(matrixBindGroup, depthTexture, targetPosition) {
-    const depthRangeBuffer = device.createBuffer({
-        size: 8,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([0, 1]));
+async function renderFullScene(matricesBindGroup, depthTexture, targetPosition) {
+    const { bindGroup: depthRangeBG, buffer: drBuf } =
+        createDepthRangeBindGroup(0, 1e6);
 
-    const depthRangeBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(2),
-        entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
-    });
-
-    const targetPositionBuffer = device.createBuffer({
-        size: 12,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(targetPositionBuffer, 0, Float32Array.from(targetPosition));
-
-    const targetPositionBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(3),
-        entries: [{ binding: 0, resource: { buffer: targetPositionBuffer } }],
-    });
+    const { bindGroup: targetBG, buffer: tBuf } =
+        createTargetPositionBindGroup(targetPosition);
 
     const tempTexture = device.createTexture({
         size: [canvas.width, canvas.height],
@@ -378,9 +480,9 @@ async function renderFullScene(matrixBindGroup, depthTexture, targetPosition) {
     });
 
     renderPass.setPipeline(renderingPipeline);
-    renderPass.setBindGroup(1, matrixBindGroup);
-    renderPass.setBindGroup(2, depthRangeBindGroup);
-    renderPass.setBindGroup(3, targetPositionBindGroup);
+    renderPass.setBindGroup(1, matricesBindGroup);
+    renderPass.setBindGroup(2, depthRangeBG);
+    renderPass.setBindGroup(3, targetBG);
 
     for (const pointcloud of pointclouds) {
         renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
@@ -392,32 +494,20 @@ async function renderFullScene(matrixBindGroup, depthTexture, targetPosition) {
     await device.queue.onSubmittedWorkDone();
 
     tempTexture.destroy();
-    depthRangeBuffer.destroy();
-    targetPositionBuffer.destroy();
+    drBuf.destroy();
+    tBuf.destroy();
 }
 
-async function renderPointsInDepthRange(minDepth, maxDepth, matrixBindGroup, depthTexture, composer, targetPosition) {
-    const depthRangeBuffer = device.createBuffer({
-        size: 8,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([minDepth, maxDepth]));
+async function renderPointsInDepthRange(
+    minDepth, maxDepth, near, far,
+    matricesBindGroup, depthTexture, composer,
+    targetPosition
+) {
+    const { bindGroup: depthRangeBG, buffer: drBuf } =
+        createDepthRangeBindGroup(minDepth, maxDepth);
 
-    const depthRangeBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(2),
-        entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
-    });
-
-    const targetPositionBuffer = device.createBuffer({
-        size: 12,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(targetPositionBuffer, 0, Float32Array.from(targetPosition));
-
-    const targetPositionBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(3),
-        entries: [{ binding: 0, resource: { buffer: targetPositionBuffer } }],
-    });
+    const { bindGroup: targetBG, buffer: tBuf } =
+        createTargetPositionBindGroup(targetPosition);
 
     const captureTexture = device.createTexture({
         size: [canvas.width, canvas.height],
@@ -445,9 +535,9 @@ async function renderPointsInDepthRange(minDepth, maxDepth, matrixBindGroup, dep
     });
 
     renderPass.setPipeline(renderingPipeline);
-    renderPass.setBindGroup(1, matrixBindGroup);
-    renderPass.setBindGroup(2, depthRangeBindGroup);
-    renderPass.setBindGroup(3, targetPositionBindGroup);
+    renderPass.setBindGroup(1, matricesBindGroup);
+    renderPass.setBindGroup(2, depthRangeBG);
+    renderPass.setBindGroup(3, targetBG);
 
     for (const pointcloud of pointclouds) {
         renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
@@ -504,8 +594,96 @@ async function renderPointsInDepthRange(minDepth, maxDepth, matrixBindGroup, dep
     reconstructionWrite.destroy();
     sdfTexture.destroy();
     pointsTexture.destroy();
-    depthRangeBuffer.destroy();
-    targetPositionBuffer.destroy();
+    drBuf.destroy();
+    tBuf.destroy();
+}
+
+async function capturePointCloudImage(matricesBindGroup, depthTexture, targetPosition) {
+    const { bindGroup: depthRangeBG, buffer: drBuf } =
+        createDepthRangeBindGroup(0, 1e6);
+
+    const { bindGroup: targetBG, buffer: tBuf } =
+        createTargetPositionBindGroup(targetPosition);
+
+    const captureTexture = device.createTexture({
+        size: [canvas.width, canvas.height],
+        usage: GPUTextureUsage.COPY_SRC |
+               GPUTextureUsage.RENDER_ATTACHMENT,
+        format: format,
+    });
+
+    const commandEncoder = device.createCommandEncoder();
+    const renderPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+            view: captureTexture.createView(),
+            loadOp: "clear",
+            clearValue: [0, 0, 0, 0],
+            storeOp: "store",
+        }],
+        depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthLoadOp: "clear",
+            depthClearValue: 1,
+            depthStoreOp: "store",
+        },
+    });
+
+    renderPass.setPipeline(renderingPipeline);
+    renderPass.setBindGroup(1, matricesBindGroup);
+    renderPass.setBindGroup(2, depthRangeBG);
+    renderPass.setBindGroup(3, targetBG);
+
+    for (const pointcloud of pointclouds) {
+        renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
+        renderPass.draw(pointcloud.numberOfPoints);
+    }
+
+    renderPass.end();
+
+    const bytesPerPixel = 4;
+    const alignedBytesPerRow = Math.ceil((canvas.width * bytesPerPixel) / 256) * 256;
+    const outputBuffer = device.createBuffer({
+        size: alignedBytesPerRow * canvas.height,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
+    commandEncoder.copyTextureToBuffer(
+        {
+            texture: captureTexture,
+            mipLevel: 0,
+            origin: { x: 0, y: 0, z: 0 },
+        },
+        {
+            buffer: outputBuffer,
+            bytesPerRow: alignedBytesPerRow,
+            rowsPerImage: canvas.height,
+        },
+        [canvas.width, canvas.height, 1]
+    );
+
+    device.queue.submit([commandEncoder.finish()]);
+    await device.queue.onSubmittedWorkDone();
+
+    await outputBuffer.mapAsync(GPUMapMode.READ);
+    const mapped = new Uint8Array(outputBuffer.getMappedRange());
+    const tightData = new Uint8Array(canvas.width * canvas.height * bytesPerPixel);
+
+    for (let y = 0; y < canvas.height; y++) {
+        const srcOffset = y * alignedBytesPerRow;
+        const dstOffset = y * canvas.width * bytesPerPixel;
+        tightData.set(
+            mapped.subarray(srcOffset, srcOffset + canvas.width * bytesPerPixel),
+            dstOffset
+        );
+    }
+
+    outputBuffer.unmap();
+    outputBuffer.destroy();
+    captureTexture.destroy();
+    drBuf.destroy();
+    tBuf.destroy();
+
+    return tightData;
 }
 
 function cleanup() {

@@ -65,8 +65,7 @@ export class DepthMap {
 		});
 	}
 
-	// Function for extracting depth values
-	// Returns depth bins
+	// Funkcija za ekstrakcijo globinskih vrednosti iz depth texture in grupiranje v bin-e.
 	async extractDepthValues() {
 		const commandEncoder = this.device.createCommandEncoder();
 
@@ -80,7 +79,6 @@ export class DepthMap {
 		computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
 		computePass.end();
 
-		// Copy the depth values to the readback buffer
 		commandEncoder.copyBufferToBuffer(
 			this.depthStorageBuffer,
 			0,
@@ -92,7 +90,6 @@ export class DepthMap {
 		this.device.queue.submit([commandEncoder.finish()]);
 		await this.device.queue.onSubmittedWorkDone();
 
-		// Map the buffer for reading
 		await this.readbackBuffer.mapAsync(GPUMapMode.READ);
 		const arrayBuffer = this.readbackBuffer.getMappedRange();
 		const depthValues = new Float32Array(arrayBuffer.slice(0));
@@ -102,275 +99,110 @@ export class DepthMap {
 		return depthValues;
 	}
 
-	// Creating bins based on the dapth and points density
-	// async groupDepthIntoBins() {
-	// 	let depthValues = await this.extractDepthValues();
-
-	// 	const near = 0.1;
-	// 	const far = 2000.0;
-
-	// 	// Convert nonlinear depth to linear distance
-	// 	let linearDepths = depthValues
-	// 		.filter(d => d > 0.001 && d < 0.999)
-	// 		.map(d => (2.0 * near * far) / (far + near - (2.0 * d - 1.0) * (far - near)));
-
-  
-	// 	// Filter out invalid depth values
-	// 	depthValues = depthValues.filter(d => d > 0.001 && d < 0.999);
-		
-	// 	let minDepth = Infinity;
-	// 	let maxDepth = -Infinity;
-	// 	for (let i = 0; i < depthValues.length; i++) {
-	// 	  if (depthValues[i] < minDepth) minDepth = depthValues[i];
-	// 	  if (depthValues[i] > maxDepth) maxDepth = depthValues[i];
-	// 	}
-		
-	// 	const histogramBins = 100;
-	// 	const binWidth = (maxDepth - minDepth) / histogramBins;
-		
-	// 	// Count frequencies
-	// 	const histogram = new Array(histogramBins).fill(0);
-	// 	for (const depth of depthValues) {
-	// 	  const binIndex = Math.min(
-	// 		Math.floor((depth - minDepth) / binWidth),
-	// 		histogramBins - 1
-	// 	  );
-	// 	  histogram[binIndex]++;
-	// 	}
-		
-	// 	// Find peaks in the histogram (areas of high point density)
-	// 	const peaks = [];
-	// 	let maxFrequency = 0;
-	// 	for (let i = 0; i < histogram.length; i++) {
-	// 	  if (histogram[i] > maxFrequency) maxFrequency = histogram[i];
-	// 	}
-		
-	// 	const peakThreshold = maxFrequency * 0.1;
-		
-	// 	for (let i = 1; i < histogramBins - 1; i++) {
-	// 	  if (histogram[i] > peakThreshold && 
-	// 		  histogram[i] > histogram[i - 1] && 
-	// 		  histogram[i] > histogram[i + 1]) {
-	// 		const peakDepth = minDepth + (i + 0.5) * binWidth;
-	// 		peaks.push(peakDepth);
-	// 	  }
-	// 	}
-		
-	// 	// If no significant peaks found, fall back to uniform bins
-	// 	if (peaks.length < 4) {
-	// 	  const numBins = 15; 
-	// 	  const uniformBins = [];
-	// 	  for (let i = 0; i < numBins; i++) {
-	// 		const start = minDepth + (maxDepth - minDepth) * (i / numBins);
-	// 		const end = minDepth + (maxDepth - minDepth) * ((i + 1) / numBins);
-	// 		uniformBins.push([start, end]);
-	// 	  }
-	// 	  return uniformBins;
-	// 	}
-		
-	// 	// Sort peaks by depth
-	// 	peaks.sort((a, b) => a - b);
-		
-	// 	const bins = [];
-
-	// 	// const firstPeakLowerBound = Math.max(0, (peaks[0] + (peaks[1] || maxDepth)) / 2);
-	// 	// if (firstPeakLowerBound > 1e-2) {
-	// 	// 	bins.push([0, firstPeakLowerBound]);
-	// 	// }
-
-	// 	for (let i = 0; i < peaks.length; i++) {
-	// 	  const peakDepth = peaks[i];
-		  
-	// 	  let binStart, binEnd;
-		  
-	// 	  if (i === 0) {
-	// 		binStart = minDepth;
-	// 		const nextPeak = peaks[i + 1] || maxDepth;
-	// 		binEnd = (peakDepth + nextPeak) / 2;
-	// 	  } else if (i === peaks.length - 1) {
-	// 		const prevPeak = peaks[i - 1];
-	// 		binStart = (prevPeak + peakDepth) / 2;
-	// 		binEnd = maxDepth;
-	// 	  } else {
-	// 		const prevPeak = peaks[i - 1];
-	// 		const nextPeak = peaks[i + 1];
-	// 		binStart = (prevPeak + peakDepth) / 2;
-	// 		binEnd = (peakDepth + nextPeak) / 2;
-	// 	  }
-		  
-	// 	  bins.push([binStart, binEnd]);
-	// 	}
-		
-	// 	console.log("Adaptive depth clusters:", bins);
-	// 	return bins;
-	// }
-
+	/**
+	 * Deljenje globine v bin-e, ki vsebujejo približno enako število točk, ne glede na razdaljo kamere. 
+	 * Bin-i so v linearnih enotah pogleda, da jih shader lahko neposredno primerja.
+	 */
 	async groupDepthIntoBins({
-  histogramBins = 128,
-  peakThresholdFactor = 0.01,
-  smoothKernelSize = 3,
-  near = 0.1,
-  far = 2000.0,
-  nearBias = 0.7 // <1 -> denser in front; 1 = no bias; >1 -> denser at far
-} = {}) {
-  // read depth buffer (assumes extractDepthValues returns array of depth in [0,1])
-  let depthValues = await this.extractDepthValues();
-  // filter out invalid values
-  let valid = depthValues.filter(d => Number.isFinite(d) && d > 0.0005 && d < 0.9995);
-  if (valid.length === 0) {
-    console.warn("no valid depth samples");
-    return [[0, 1]]; // fallback single bin (depth buffer domain)
-  }
+		numBins = 12, // Število ciljanih binov (globinskih rezin)
+		near = 0.05, // Near ravnina (mora biti usklajena s tisto, ki jo shader uporablja za renderiranje)
+		far = 5.0, // Far ravnina (mora biti usklajena s tisto, ki jo shader uporablja za renderiranje)
+		minPointsFraction = 0.01, // Minimalni delež točk v binu, preden se združi
+		minBinWidth = 0.002, // Minimalna širina bin-a v linearni razdalji
+	} = {}) {
+		const depthValues = await this.extractDepthValues();
 
-  // --- 1) linearize depth values (convert nonlinear depth -> view-space distance)
-  // convert depth in [0,1] to NDC z in [-1,1]:
-  // z_ndc = depth * 2 - 1
-  // view_z = (2*near*far) / (far + near - z_ndc*(far - near))
-  const linearize = (d) => {
-    const z_ndc = d * 2.0 - 1.0;
-    return (2.0 * near * far) / (far + near - z_ndc * (far - near));
-  };
-  const linearDepths = valid.map(d => linearize(d));
+		// Lineariziraj globinske vrednosti iz NDC v linearne enote pogleda
+		const linearize = (d) => {
+			const z_ndc = d * 2.0 - 1.0;
+			return (2.0 * near * far) / (far + near - z_ndc * (far - near));
+		};
 
-  function linearToDepthBuffer(zView) {
-    // invert the linearize steps:
-    // z_ndc = (far + near - 2*near*far / zView) / (far - near)
-    const term = (2.0 * near * far) / zView;
-    const z_ndc = (far + near - term) / (far - near);
-    const depth = (z_ndc + 1.0) * 0.5; // back to [0,1]
-    return depth;
-  }
+		const linear = [];
+		for (let i = 0; i < depthValues.length; i++) {
+			const d = depthValues[i];
+			// Zavrnemo vrednosti, ki so točno 1.0 (neveljavno/ nebo) ali 0.0 (morda ekstremno blizu, lahko tudi artefakti), 
+			// ter tiste, ki so izven uporabnega razpona.
+			if (d > 0.0 && d < 0.999) {
+				const lv = linearize(d);
+				if (Number.isFinite(lv) && lv > 0) {
+					linear.push(lv);
+				}
+			}
+		}
 
-  // --- 2) optional near-bias mapping to make bins denser near camera
-  // We remap normalized linear depth by raising to power alpha in (0,1) to expand small distances.
-  // lower nearBias -> stronger bias towards front (e.g. 0.5), 1 = no bias.
-    // normalize to 0..1 then pow, then denormalize
-	let minL = Infinity;
-	let maxL = -Infinity;
-	for (let i = 0; i < linearDepths.length; i++) {
-		if (linearDepths[i] < minL) minL = linearDepths[i];
-		if (linearDepths[i] > maxL) maxL = linearDepths[i];
+		if (linear.length === 0) {
+			console.warn("No valid depth samples — returning single fallback bin");
+			return [[near, far]];
+		}
+
+		// Sortiraj linearne globinske vrednosti, da lahko zgradimo kvantilne bin-e.
+		linear.sort((a, b) => a - b);
+
+		const totalPoints = linear.length;
+		const minPointsPerBin = Math.max(1, Math.floor(totalPoints * minPointsFraction));
+
+		//Ustvari surove bin-e na osnovi kvantilov, 
+		// da zagotovimo približno enako število točk v vsakem binu, ne glede na razdaljo.
+		let rawBins = [];
+		for (let i = 0; i < numBins; i++) {
+			const startIdx = Math.floor((i / numBins) * totalPoints);
+			const endIdx = Math.min(
+				Math.floor(((i + 1) / numBins) * totalPoints) - 1,
+				totalPoints - 1
+			);
+			const start = linear[startIdx];
+			const end = linear[endIdx];
+			rawBins.push({
+				start,
+				end,
+				count: endIdx - startIdx + 1,
+			});
+		}
+
+		// Ydružimo surove bin-e, ki imajo premalo točk ali so preozki, da zagotovimo stabilnost rekonstrukcije.
+		let merged = [rawBins[0]];
+		for (let i = 1; i < rawBins.length; i++) {
+			const prev = merged[merged.length - 1];
+			const cur = rawBins[i];
+			const width = cur.end - cur.start;
+			if (width < minBinWidth || cur.count < minPointsPerBin) {
+				prev.end = cur.end;
+				prev.count += cur.count;
+			} else {
+				merged.push(cur);
+			}
+		}
+
+
+		// Razširimo prvega/ zadnjega bina na celoten near/far razpon, da nobena točka ne pade izven pokritosti.
+		const bins = merged.map((b, i) => {
+			let s = b.start;
+			let e = b.end;
+			// Prvi bin se razteza vse do near, da zajame vse točke blizu kamere
+			if (i === 0) s = Math.max(0, near * 0.5);
+			// Zadnji bin se razteza vse do far, da zajame vse točke daleč od kamere
+			if (i === merged.length - 1) e = far * 1.5;
+			return [s, e];
+		});
+
+		// Naredimo bin-e povezane (continous) in dodamo prekrivanje.
+		// Prekrivanje zagotavlja, da točke blizu meje pojavijo v obeh
+		// sosednjih rezinah, kar daje rekonstrukcijskemu solverju dovolj podatkov.
+		for (let i = 1; i < bins.length; i++) {
+			const mid = (bins[i - 1][1] + bins[i][0]) / 2;
+			const binWidth = bins[i][1] - bins[i][0];
+			const prevBinWidth = bins[i - 1][1] - bins[i - 1][0];
+			const overlap = Math.min(binWidth, prevBinWidth) * 0.15;
+			bins[i - 1][1] = mid + overlap;
+			bins[i][0] = mid - overlap;
+		}
+
+		console.log(
+			`Depth binning: ${totalPoints} valid points → ${bins.length} bins (linear view-space)`,
+			bins
+		);
+
+		return bins;
 	}
-    // const minL = Math.min(...linearDepths);
-    // const maxL = Math.max(...linearDepths);
-const range = Math.max(1e-6, maxL - minL);
-    const biasStrength = 5.0; // 1 = uniform, >1 = denser near
-
-	const remapped = linearDepths.map(v => {
-	// log scale optional, comment out if not desired
-	const logMin = Math.log(minL + 1e-6);
-	const logMax = Math.log(maxL + 1e-6);
-	const logRange = logMax - logMin;
-	const norm = (Math.log(v + 1e-6) - logMin) / logRange; // 0..1
-	const biased = Math.pow(norm, 1 / biasStrength);
-	return biased * range + minL;
-	});
-
-  // --- 3) build histogram on remapped (linear) distances
-	let minDepth = Infinity;
-	let maxDepth = -Infinity;
-	for (let i = 0; i < remapped.length; i++) {
-	  if (remapped[i] < minDepth) minDepth = remapped[i];
-	  if (remapped[i] > maxDepth) maxDepth = remapped[i];
-	}
-	const binWidth = (maxDepth - minDepth) / histogramBins;
-	const histogram = new Array(histogramBins).fill(0);
-	for (const d of remapped) {
-	const idx = Math.min(
-		Math.floor((d - minDepth) / (binWidth || 1e-6)),
-		histogramBins - 1
-	);
-	histogram[idx]++;
-	}
-  // --- 4) smooth histogram to reduce noise (simple box blur)
-  if (smoothKernelSize > 1) {
-    const half = Math.floor(smoothKernelSize / 2);
-    const smoothed = new Array(histogramBins).fill(0);
-    for (let i = 0; i < histogramBins; i++) {
-      let sum = 0, cnt = 0;
-      for (let k = -half; k <= half; k++) {
-        const j = i + k;
-        if (j >= 0 && j < histogramBins) { sum += histogram[j]; cnt++; }
-      }
-      smoothed[i] = sum / Math.max(1, cnt);
-    }
-    for (let i = 0; i < histogramBins; i++) histogram[i] = smoothed[i];
-  }
-
-  // --- 5) find peaks
-  const peaks = [];
-  let maxFreq = Math.max(...histogram);
-  const peakThreshold = Math.max(1, maxFreq * peakThresholdFactor);
-  for (let i = 1; i < histogramBins - 1; i++) {
-    if (histogram[i] > peakThreshold && histogram[i] > histogram[i - 1] && histogram[i] >= histogram[i + 1]) {
-      // compute peak center in linear units
-      const peakDepth = minDepth + (i + 0.5) * binWidth;
-      peaks.push(peakDepth);
-    }
-  }
-
-  // If not enough peaks, fall back to uniform bins (but computed in linear distance)
-  if (peaks.length < 3) {
-    const numBins = 10;
-    const uniform = [];
-    for (let i = 0; i < numBins; i++) {
-      const s = minDepth + (maxDepth - minDepth) * (i / numBins);
-      const e = minDepth + (maxDepth - minDepth) * ((i + 1) / numBins);
-      uniform.push([s, e]);
-    }
-    console.log("uniform linear bins (fallback)", uniform);
-	// const logBins = uniform.reverse().map(([s, e]) => [ linearToDepthBuffer(s), linearToDepthBuffer(e) ]);
-	  if (uniform.length > 0) {
-	const firstStart = uniform[0][0];
-	if (firstStart > 0.01) {
-		// Add an extra bin from 0 to the start of the first one
-		uniform.unshift([0, firstStart]);
-	}
-	}
-
-	return uniform;
-  }
-
-  // --- 6) turn peaks into contiguous bins (in linear distance)
-  peaks.sort((a, b) => a - b);
-  const binsLinear = [];
-  for (let i = 0; i < peaks.length; i++) {
-    let start, end;
-    if (i === 0) {
-      start = minDepth;
-      end = (peaks[i] + (peaks[i + 1] ?? maxDepth)) / 2;
-    } else if (i === peaks.length - 1) {
-      start = (peaks[i - 1] + peaks[i]) / 2;
-      end = maxDepth;
-    } else {
-      start = (peaks[i - 1] + peaks[i]) / 2;
-      end = (peaks[i] + peaks[i + 1]) / 2;
-    }
-    binsLinear.push([start, end]);
-  }
-
-  console.log("Adaptive linear-depth clusters (linear units):", binsLinear);
-
-    
-//   const binsDepthBuffer = binsLinear.map(([s, e]) => [ linearToDepthBuffer(s), linearToDepthBuffer(e) ]);
-//   if (binsDepthBuffer.length > 0) {
-// 	const firstStart = binsDepthBuffer[0][0];
-// 	if (firstStart > 0.01) {
-// 		// Add an extra bin from 0 to the start of the first one
-// 		binsDepthBuffer.unshift([0, firstStart]);
-// 	}
-// 	}
-//   console.log("Adaptive log-depth clusters (linear units):", binsDepthBuffer);
-//   return binsDepthBuffer;
-  if (binsLinear.length > 0) {
-	const firstStart = binsLinear[0][0];
-	if (firstStart > 0.01) {
-		// Add an extra bin from 0 to the start of the first one
-		binsLinear.unshift([0, firstStart]);
-	}
-	}
-  return binsLinear;
-}
-
-
 }
