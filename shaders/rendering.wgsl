@@ -1,6 +1,8 @@
 struct Point {
     position: vec3f,
     color: u32,
+    normal: vec3f,
+    depth: f32
 }
 
 @group(0) @binding(0) var<storage,read> points: array<Point>;

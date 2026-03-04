@@ -2,6 +2,8 @@ import * as mat4 from "./js/mat4.js";
 import { PointerController } from "./js/PointerController.js";
 import { LasLoader } from "./js/LasLoader.js";
 import { CameraPosition } from "./js/CameraPosition.js";
+import { RenderingControls } from "./js/RenderingControls.js";
+import { AdaptiveGrid } from "./js/AdaptiveGrid.js";
 import JSZip from "jszip";
 import saveAs from "file-saver";
 
@@ -16,7 +18,7 @@ const CONFIG = {
     simpleRenderingColorOrder: "bgr",
     hemisphereRadii: [0.17/*, 0.35, 0.95*/],
     imagesPerCombination: 7,
-    lasFile: "./data/cropped_filtered_1.las",
+    lasFile: "./data/cropped_filtered_normals_1.las",
     targetPositions: [
         [0, -0.17, 0],
         // [0.1, -0.17, 0],
@@ -260,6 +262,7 @@ const positions = lasData.positions;
 const colors = lasData.colors;
 const colorsRGB = lasData.colorsRGB;
 const scaleFactor = lasData.scaleFactor;
+const normals = lasData.normals;
 
 console.log(`Loaded ${positions.length / 3} points`);
 
@@ -292,6 +295,81 @@ const renderingPipeline = device.createRenderPipeline({
         depthCompare: "less",
         format: "depth32float",
     },
+    layout: "auto",
+});
+
+// Prilagodimo rendering pipeline za quad/billboard/gaussian
+async function loadQuadPipeline(shaderFile, enableBlend) {
+    const code = await fetch(shaderFile).then(r => r.text());
+    const module = device.createShaderModule({ code });
+    const blendState = {
+        color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+        alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+    };
+    return device.createRenderPipeline({
+        vertex: { module },
+        fragment: { module, targets: [{ format, ...(enableBlend ? { blend: blendState } : {}) }] }, // blend dodamo samo če gre za gaussian
+        primitive: { topology: "triangle-list", cullMode: "none" },
+        depthStencil: {
+            depthWriteEnabled: !enableBlend,  // false za GAUSSIANS, saj pri gaussian za pravilen izris moremo sortirat 
+            depthCompare: "less",
+            format: "depth32float"
+        },
+        layout: "auto",
+    });
+}
+
+const quadPipelines = {
+    DISKS:      await loadQuadPipeline("./shaders/rendering_disks.wgsl",      false),
+    BILLBOARDS: await loadQuadPipeline("./shaders/rendering_billboards.wgsl", false),
+    GAUSSIANS:  await loadQuadPipeline("./shaders/rendering_gaussians.wgsl",  true),
+}; // določimo kateri shader uporabljamo
+
+// Render mode state
+let currentMode = "POINTS";
+let currentPointSize = 0.001;
+
+// SceneParams buffer
+const sceneParamsBuffer = device.createBuffer({
+    size: 48,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+
+function writeSceneParams(tp, camPos, pointSize) {
+    const data = new Float32Array(12);
+    data[0] = tp[0];   data[1] = tp[1];   data[2] = tp[2];   data[3] = 0;   // targetPosition
+    data[4] = camPos[0]; data[5] = camPos[1]; data[6] = camPos[2]; data[7] = 0; // cameraPos
+    data[8] = pointSize; data[9] = 0; data[10] = 0; data[11] = 0;             // pointSize + pad
+    device.queue.writeBuffer(sceneParamsBuffer, 0, data);
+}
+
+// ============================================================================
+// RENDERING CONTROLS UI
+// ============================================================================
+const controls = new RenderingControls({
+    modes: ["POINTS", "DISKS", "BILLBOARDS", "GAUSSIANS"],
+    currentMode,
+    currentPointSize,
+    onModeChange: (mode) => { currentMode = mode; },
+    onSizeChange: (size) => { currentPointSize = size; },
+});
+controls.mount(document.body);
+
+// Sorting pipelines
+const preparationCode  = await fetch("./shaders/preparation.wgsl").then(r => r.text());
+const localSortCode    = await fetch("./shaders/localSort.wgsl").then(r => r.text());
+const globalSortCode   = await fetch("./shaders/globalSort.wgsl").then(r => r.text());
+
+const preparationPipeline = device.createComputePipeline({
+    compute: { module: device.createShaderModule({ code: preparationCode }), entryPoint: "main" },
+    layout: "auto",
+});
+const localSortPipeline = device.createComputePipeline({
+    compute: { module: device.createShaderModule({ code: localSortCode }), entryPoint: "compute" },
+    layout: "auto",
+});
+const globalSortPipeline = device.createComputePipeline({
+    compute: { module: device.createShaderModule({ code: globalSortCode }), entryPoint: "mergePass" },
     layout: "auto",
 });
 
@@ -338,10 +416,12 @@ pointerController.addEventListener("pointermove", (e) => {
     }
 });
 
+let SORT = false;
 function updateCameraOrbit() {
     cameraPosition[0] = cameraTarget[0] + distance * Math.cos(pitch) * Math.sin(yaw);
     cameraPosition[1] = cameraTarget[1] + distance * Math.sin(pitch);
     cameraPosition[2] = cameraTarget[2] + distance * Math.cos(pitch) * Math.cos(yaw);
+    SORT = true;
 }
 
 updateCameraOrbit();
@@ -380,15 +460,16 @@ document.addEventListener("keydown", (event) => {
             cameraTarget[0] -= forward[0] * moveSpeed;
             cameraTarget[2] -= forward[2] * moveSpeed;
             break;
-        case "PageUp":
+        case "w":
             cameraPosition[1] += moveSpeed;
             cameraTarget[1] += moveSpeed;
             break;
-        case "PageDown":
+        case "s":
             cameraPosition[1] -= moveSpeed;
             cameraTarget[1] -= moveSpeed;
             break;
     }
+    SORT = true;
 });
 
 // ============================================================================
@@ -604,29 +685,42 @@ async function exportResults(capturedData) {
 }
 
 // Interactive preview render loop
-const pointByteSize = 16;
+const pointByteSize = 32;
 const maxNumberOfPointsPerBuffer = 1024 * 1024;
 const numberOfAllPoints = positions.length / 3;
 const pointclouds = [];
 
-for (let i = 0; i < Math.ceil(numberOfAllPoints / maxNumberOfPointsPerBuffer); i++) {
-    const startIndex = i * maxNumberOfPointsPerBuffer;
-    const numberOfPoints = Math.min(maxNumberOfPointsPerBuffer, numberOfAllPoints - startIndex);
+// Ustvarimo adaptivno mrežo, ki razdeli točke v celice z največ maxNumberOfPointsPerBuffer točkami
+// To nam omogoča (za razliko od naključnega deljenja), da nato te celice sortiramo
+// glde na povprečno globino točk v celici, kar je potrebno za pravilen izris gausovk (back-to-front)
+// Točke najprej sortiramo znotraj vsake celice, nato pa sortiramo še celice med seboj
+// Celice niso razporejene v regularno mrežo, ampak so prilagojene gostoti točk
+// saj točje v oblaku niso enakomerno proazdeljene - 
+// v gostejših delih bo več manjših celic, v redkejših pa manj večjih celic
+const grid = new AdaptiveGrid(positions, maxNumberOfPointsPerBuffer);
+console.log(`Adaptive grid: ${grid.cells.length} cells`);
 
-    const pointData = new ArrayBuffer(numberOfPoints * pointByteSize);
+for (const cell of grid.cells) {
+    const count = cell.indices.length;
+
+    const pointData = new ArrayBuffer(maxNumberOfPointsPerBuffer * pointByteSize);
     const pointDataView = new DataView(pointData);
 
-    for (let j = 0; j < numberOfPoints; j++) {
-        const posIndex = (startIndex + j) * 3;
-        const pointOffset = j * pointByteSize;
+    cell.indices.forEach((j, slot) => {
+        const posIndex = j * 3;
+        const pointOffset = slot * pointByteSize;
         pointDataView.setFloat32(pointOffset, positions[posIndex], true);
         pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
         pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
-        pointDataView.setUint32(pointOffset + 12, colors[startIndex + j], true);
-    }
+        pointDataView.setUint32( pointOffset + 12, colors[j], true);
+        pointDataView.setFloat32(pointOffset + 16, normals[posIndex], true);
+        pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2], true);
+        pointDataView.setFloat32(pointOffset + 28, 0.0, true);
+    });
 
     const pointBuffer = device.createBuffer({
-        size: numberOfPoints * pointByteSize,
+        size: maxNumberOfPointsPerBuffer * pointByteSize,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(pointBuffer, 0, pointData);
@@ -636,7 +730,22 @@ for (let i = 0; i < Math.ceil(numberOfAllPoints / maxNumberOfPointsPerBuffer); i
         entries: [{ binding: 0, resource: { buffer: pointBuffer } }],
     });
 
-    pointclouds.push({ pointBuffer, renderingBindGroup, numberOfPoints });
+    // Določimo center vsake celice za kasnejše 
+    // sortiranje celic glede na globino (povprečje pozicij točk v celici)
+    let cx = 0, cy = 0, cz = 0;
+    for (const pi of cell.indices) {
+        cx += positions[pi * 3];
+        cy += positions[pi * 3 + 1];
+        cz += positions[pi * 3 + 2];
+    }
+    cx /= count; cy /= count; cz /= count;
+
+    pointclouds.push({
+        pointBuffer,
+        renderingBindGroup,
+        numberOfPoints: count,
+        center: [cx, cy, cz], 
+    });
 }
 
 let depthTexture = device.createTexture({
@@ -646,6 +755,156 @@ let depthTexture = device.createTexture({
 });
 
 let lastSize = { width: null, height: null };
+
+// ============================================================================
+// SORTING - Bitonic sort
+// ============================================================================
+// Ustvari buffer z parametri k in j za merge pass
+// k - velikost merge bloka, j - korak znotraj merge bloka
+const mergeParamCache = new Map();
+function getMergeParamBuffer(k, j) {
+    const key = (k * 100000 + j); // unikaten integer key
+    if (!mergeParamCache.has(key)) {
+        const buf = device.createBuffer({
+            size: 8,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(buf, 0, new Uint32Array([k, j]));
+        mergeParamCache.set(key, buf);
+    }
+    return mergeParamCache.get(key);
+}
+
+// Pokliče getMergeParamBuffer za vse potrebne kombinacije k in j (glede na število točk)
+function prewarmMergeBuffers(maxN) {
+    for (let k = 512; k <= maxN * 2; k *= 2) {
+        for (let j = k / 2; j >= 1; j = Math.floor(j / 2)) {
+            getMergeParamBuffer(k, j);
+        }
+    }
+}
+prewarmMergeBuffers(numberOfAllPoints);
+
+// Vstvari binding groupe za sortiranje - priprava, lokalno sortiranje in globalno sortiranje
+function buildSortBindGroups(pointcloud) {
+    const n = pointcloud.numberOfPoints;
+
+    // Reusable view matrix buffer
+    pointcloud.prepViewBuffer = device.createBuffer({
+        size: 64,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    const numBuf = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(numBuf, 0, new Uint32Array([n]));
+
+    // Bind group za pripravo (preparation pass)
+    pointcloud.prepBG0 = device.createBindGroup({
+        layout: preparationPipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: pointcloud.pointBuffer } }],
+    });
+    pointcloud.prepBG1 = device.createBindGroup({
+        layout: preparationPipeline.getBindGroupLayout(1),
+        entries: [
+            { binding: 0, resource: { buffer: pointcloud.prepViewBuffer } },
+            { binding: 1, resource: { buffer: numBuf } },
+        ],
+    });
+
+    // Bind group za local sort
+    pointcloud.localSortBG = device.createBindGroup({
+        layout: localSortPipeline.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: { buffer: pointcloud.pointBuffer } },
+            { binding: 1, resource: { buffer: numBuf } },
+        ],
+    });
+
+    // Bind groupi za global sort - potrebujemo jih več, glede na različne kombinacije k in j
+    pointcloud.globalSortBGs = new Map();
+    for (let k = 512; k <= n * 2; k *= 2) {
+        for (let j = k / 2; j >= 1; j = Math.floor(j / 2)) {
+            const key = k * 100000 + j;
+            pointcloud.globalSortBGs.set(key, device.createBindGroup({
+                layout: globalSortPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: pointcloud.pointBuffer } },
+                    { binding: 1, resource: { buffer: numBuf } },
+                    { binding: 2, resource: { buffer: getMergeParamBuffer(k, j) } },
+                ],
+            }));
+        }
+    }
+}
+
+// Pripravimo bind groupe za vsak pointcloud batch
+for (const pc of pointclouds) {
+    buildSortBindGroups(pc);
+}
+
+function sortPointCloud(pointcloud, viewMatrix) {
+    const n = pointcloud.numberOfPoints;
+    const numWorkgroups = Math.ceil(n / 256);
+
+    console.log(`sorting: numberOfPoints=${pointcloud.numberOfPoints}, paddedSize=${n}, ratio=${n/pointcloud.numberOfPoints}`);
+
+
+    device.queue.writeBuffer(pointcloud.prepViewBuffer, 0, new Float32Array(viewMatrix));
+
+    // Preparation pass
+    // izračunamo globino vsake točke glede na trenutni pogled kamere in shranimo v buffer
+    // To je sort key za kasnejše sortiranje
+    let encoder = device.createCommandEncoder();
+    let pass = encoder.beginComputePass();
+    pass.setPipeline(preparationPipeline);
+    pass.setBindGroup(0, pointcloud.prepBG0);
+    pass.setBindGroup(1, pointcloud.prepBG1);
+    pass.dispatchWorkgroups(numWorkgroups);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    // Local sort pass - sortiramo točke znotraj vsake skupine
+    encoder = device.createCommandEncoder();
+    pass = encoder.beginComputePass();
+    pass.setPipeline(localSortPipeline);
+    pass.setBindGroup(0, pointcloud.localSortBG);
+    pass.dispatchWorkgroups(numWorkgroups);
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+
+    // Global sort pass - sortiramo skupine med seboj (bitonic sort)
+    encoder = device.createCommandEncoder();
+    pass = encoder.beginComputePass();
+    pass.setPipeline(globalSortPipeline);
+    for (let k = 512; k <= n * 2; k *= 2) {
+        for (let j = k / 2; j >= 1; j = Math.floor(j / 2)) {
+            const key = k * 100000 + j;
+            pass.setBindGroup(0, pointcloud.globalSortBGs.get(key));
+            pass.dispatchWorkgroups(numWorkgroups);
+        }
+    }
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+}
+
+// Pomožna funkcija za izračun globine batcha glede na center celice in trenutni pogled kamere
+function getBatchDepth(pointcloud, projectionViewMatrix) {
+    const [px, py, pz] = pointcloud.center;
+    const m = projectionViewMatrix;
+    const clipZ = m[2]*px + m[6]*py + m[10]*pz + m[14];
+    const clipW = m[3]*px + m[7]*py + m[11]*pz + m[15];
+    return clipZ / clipW;
+}
+
+// Debug: prikaži samo en batch, da lažje vidimo sortiranje in izris
+let DEBUG_BATCH_INDEX = -1; // -1 = pokaži vse, 0..n = pokaži samo ta batch
+document.addEventListener("keydown", (e) => {
+    if (e.key === "n") DEBUG_BATCH_INDEX = (DEBUG_BATCH_INDEX + 1) % pointclouds.length;
+    if (e.key === "b") DEBUG_BATCH_INDEX = -1; // back to all
+    console.log(`Showing batch ${DEBUG_BATCH_INDEX} of ${pointclouds.length}`);
+});
 
 function frame() {
     const size = canvas.getBoundingClientRect();
@@ -673,10 +932,6 @@ function frame() {
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([0, 1e6]));
-    const depthRangeBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(2),
-        entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
-    });
 
     // Target position — vec4f padded for alignment
     const targetPosBuf = device.createBuffer({
@@ -685,10 +940,6 @@ function frame() {
     });
     const tp = CONFIG.targetPositions[0];
     device.queue.writeBuffer(targetPosBuf, 0, new Float32Array([tp[0], tp[1], tp[2], 0.0]));
-    const targetPosBindGroup = device.createBindGroup({
-        layout: renderingPipeline.getBindGroupLayout(3),
-        entries: [{ binding: 0, resource: { buffer: targetPosBuf } }],
-    });
 
     const commandEncoder = device.createCommandEncoder();
     const renderPass = commandEncoder.beginRenderPass({
@@ -706,15 +957,80 @@ function frame() {
         },
     });
 
-    renderPass.setPipeline(renderingPipeline);
-    renderPass.setBindGroup(1, matricesBindGroup);
-    renderPass.setBindGroup(2, depthRangeBindGroup);
-    renderPass.setBindGroup(3, targetPosBindGroup);
+    if (currentMode === "POINTS") {
+        // Original shader path — nespremenjeno
+        const depthRangeBindGroup = device.createBindGroup({
+            layout: renderingPipeline.getBindGroupLayout(2),
+            entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
+        });
+        const targetPosBindGroup = device.createBindGroup({
+            layout: renderingPipeline.getBindGroupLayout(3),
+            entries: [{ binding: 0, resource: { buffer: targetPosBuf } }],
+        });
+        renderPass.setPipeline(renderingPipeline);
+        renderPass.setBindGroup(1, matricesBindGroup);
+        renderPass.setBindGroup(2, depthRangeBindGroup);
+        renderPass.setBindGroup(3, targetPosBindGroup);
+        for (const pointcloud of pointclouds) {
+            renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
+            renderPass.draw(pointcloud.numberOfPoints);
+        }
+    } else {
+        // Če gre za GAUSSIANS, sortiramo pointcloude (znotraj vsake celice) glede na globino
+        if (currentMode === "GAUSSIANS" && SORT) {
+            for (const pc of pointclouds) {
+                sortPointCloud(pc, projectionViewMatrix);
+            }
+            SORT = false;
+        }
+        // Quad shader path — group(3) so SceneParams { targetPosition, cameraPos, pointSize }
+        writeSceneParams(tp, cameraPosition, currentPointSize);
 
-    for (const pointcloud of pointclouds) {
-        renderPass.setBindGroup(0, pointcloud.renderingBindGroup);
-        renderPass.draw(pointcloud.numberOfPoints);
+        const pipeline = quadPipelines[currentMode];
+        const depthRangeBindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(2),
+            entries: [{ binding: 0, resource: { buffer: depthRangeBuffer } }],
+        });
+        const sceneBindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(3),
+            entries: [{ binding: 0, resource: { buffer: sceneParamsBuffer } }],
+        });
+        const matricesQuadBindGroup = device.createBindGroup({
+            layout: pipeline.getBindGroupLayout(1),
+            entries: [
+                { binding: 0, resource: { buffer: mvpBuffer } },
+                { binding: 1, resource: { buffer: viewMatrixBuffer } },
+            ],
+        });
+
+        // Sortiramo batch-e glede na globino centra batch-a (povprečje pozicij točk v batch-u), 
+        // da zagotovimo pravilen back-to-front izris za GAUSSIANS
+        const batchesWithDepth = pointclouds.map((pc) => ({
+            pc,
+            depth: getBatchDepth(pc, projectionViewMatrix),
+        }));
+        batchesWithDepth.sort((a, b) => b.depth - a.depth);
+
+        renderPass.setPipeline(pipeline);
+        renderPass.setBindGroup(1, matricesQuadBindGroup);
+        renderPass.setBindGroup(2, depthRangeBindGroup);
+        renderPass.setBindGroup(3, sceneBindGroup);
+
+      // Debugging: če je DEBUG_BATCH_INDEX nastavljen na 0..n, prikažemo samo ta batch, sicer prikažemo vse
+       const batchesToRender = DEBUG_BATCH_INDEX === -1
+            ? batchesWithDepth
+            : [batchesWithDepth[DEBUG_BATCH_INDEX]];
+
+        for (const batch of batchesToRender) {
+            const pc = batch.pc;
+            renderPass.setBindGroup(0, device.createBindGroup({
+                layout: pipeline.getBindGroupLayout(0),
+                entries: [{ binding: 0, resource: { buffer: pc.pointBuffer } }],
+            }));
+            renderPass.draw(pc.numberOfPoints * 6);
+        }
     }
+
     renderPass.end();
 
     device.queue.submit([commandEncoder.finish()]);

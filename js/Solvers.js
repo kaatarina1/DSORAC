@@ -250,6 +250,24 @@ export class Solver {
 			new Float32Array([omega])
 		);
 
+		const capacity = 2;
+		const querySet = this.device.createQuerySet({
+			type: "timestamp",
+			count: capacity,
+		});
+		const queryBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage:
+				GPUBufferUsage.QUERY_RESOLVE |
+				GPUBufferUsage.STORAGE |
+				GPUBufferUsage.COPY_SRC |
+				GPUBufferUsage.COPY_DST,
+		});
+		const resultBuffer = this.device.createBuffer({
+			size: 8 * capacity,
+			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		});
+
 		let duration = 0;
 		for (let iteration = 0; iteration < this.maxIterations; iteration++) {
 			for (let color = 0; color < 2; color++) {
@@ -258,24 +276,6 @@ export class Solver {
 					0,
 					new Uint32Array([color % 2])
 				);
-
-				const capacity = 3; //Max number of timestamps we can store
-				const querySet = this.device.createQuerySet({
-					type: "timestamp",
-					count: capacity,
-				});
-				const queryBuffer = this.device.createBuffer({
-					size: 8 * capacity,
-					usage:
-						GPUBufferUsage.QUERY_RESOLVE |
-						GPUBufferUsage.STORAGE |
-						GPUBufferUsage.COPY_SRC |
-						GPUBufferUsage.COPY_DST,
-				});
-				const resultBuffer = this.device.createBuffer({
-					size: 8 * capacity,
-					usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-				});
 
 				const commandEncoder = this.device.createCommandEncoder();
 
@@ -305,8 +305,13 @@ export class Solver {
 					],
 				});
 
-				commandEncoder.writeTimestamp(querySet, 0);
-				const updatePass = commandEncoder.beginComputePass();
+				const updatePass = commandEncoder.beginComputePass({
+					timestampWrites: {
+						querySet,
+						beginningOfPassWriteIndex: 0,
+						endOfPassWriteIndex: 1,
+					},
+				});
 				updatePass.setPipeline(this.updateRedBlackPipeline);
 				updatePass.setBindGroup(0, updateBindGroup);
 				updatePass.dispatchWorkgroups(
@@ -314,8 +319,6 @@ export class Solver {
 					Math.ceil(this.height / 8)
 				);
 				updatePass.end();
-
-				commandEncoder.writeTimestamp(querySet, 1);
 
 				commandEncoder.resolveQuerySet(
 					querySet,
@@ -346,7 +349,6 @@ export class Solver {
 				duration += durationMs;
 				resultBuffer.unmap();
 
-				// Swap textures for next iteration
 				[reconstructionRead, reconstructionWrite] = [
 					reconstructionWrite,
 					reconstructionRead,

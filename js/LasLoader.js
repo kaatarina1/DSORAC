@@ -1,6 +1,23 @@
 import { createLazPerf } from "laz-perf";
 import { parseHeader } from "./Utils";
 
+// LAS Point Data Record Format -> byte offset za RGB (null če ni barve)
+// https://laspy.readthedocs.io/en/latest/intro.html
+// X, Y in Z so vedno prva tri polja (12 bajtov), nato pa se razlikujejo glede na format.
+const COLOR_OFFSETS = {
+    0: null,  // Brez barve
+    1: null,  // Brez barve
+    2: { r: 20, g: 22, b: 24 },  // Barva se nahaja na offsetih 20, 22, 24 (16 bajtov do RGB)
+    3: { r: 28, g: 30, b: 32 },  // Format 2 + GPS Time(8) = 28 (najprej ima GPS Time, potem RGB)
+    4: null,  // Brez barve
+    5: { r: 28, g: 30, b: 32 },  // Enako kot format 3, vendar za barvo ima še dodatna polja
+    6: null,  // Brez barve
+    7: { r: 30, g: 32, b: 34 },  // Format 6 + RGB
+    8: { r: 30, g: 32, b: 34 },  // Format 7 + NIR (neka dodatna polja za barvo)
+    9: null,  // Brez barve
+    10: { r: 30, g: 32, b: 34 }, // Format 9 + RGB (RGB vrednosti pred dodatnimi polji, ki jih ima format 9)
+};
+
 export class LasLoader {
 	constructor(filename) {
         this.lasName = filename;
@@ -24,6 +41,21 @@ export class LasLoader {
         } = header;
 
         console.log("Header Info:", header);
+        console.log(`Point format: ${pointDataRecordFormat}, record length: ${pointDataRecordLength} bytes`);
+
+        const colorOffset = COLOR_OFFSETS[pointDataRecordFormat] ?? null;
+        const hasColor = colorOffset !== null && 
+                         pointDataRecordLength >= (colorOffset.b + 2);
+
+        if (!hasColor) {
+            console.warn(
+                `Point format ${pointDataRecordFormat} has no color data` +
+                (colorOffset && pointDataRecordLength < colorOffset.b + 2
+                    ? ` (record too short: ${pointDataRecordLength} bytes, need ${colorOffset.b + 3})`
+                    : '') +
+                `. Points will render white.`
+            );
+        }
 
         const laszip = new LazPerf.LASZip();
         const dataPtr = LazPerf._malloc(pointDataRecordLength);
@@ -39,6 +71,7 @@ export class LasLoader {
         const positions = new Float32Array(laszip.getCount() * 3);
         const colorsRGB = new Float32Array(laszip.getCount() * 3);
         const colors = new Uint32Array(laszip.getCount());
+        const normals =  new Float32Array(laszip.getCount() * 3);
 
         let minX = Infinity,
             minY = Infinity,
@@ -60,9 +93,12 @@ export class LasLoader {
             const z = pointBuffer.getInt32(4, true) * scale[1] + offset[1];
             const y = pointBuffer.getInt32(8, true) * scale[2] + offset[2];
 
-            const r = pointBuffer.getUint16(28, true) / 65535;
-            const g = pointBuffer.getUint16(30, true) / 65535;
-            const b = pointBuffer.getUint16(32, true) / 65535;
+            let r = 1.0, g = 1.0, b = 1.0; // default white
+            if (hasColor) {
+                r = pointBuffer.getUint16(colorOffset.r, true) / 65535;
+                g = pointBuffer.getUint16(colorOffset.g, true) / 65535;
+                b = pointBuffer.getUint16(colorOffset.b, true) / 65535;
+            }
 
             minX = Math.min(minX, x);
             maxX = Math.max(maxX, x);
@@ -74,12 +110,16 @@ export class LasLoader {
             positions.set([x, y, z], i * 3);
             colorsRGB.set([r, g, b], i * 3);
             const packedColor =
-                ((Math.round(r * 255) & 0xff) << 0) | // Red channel in the least significant byte
-                ((Math.round(g * 255) & 0xff) << 8) | // Green channel in the second byte
-                ((Math.round(b * 255) & 0xff) << 16) | // Blue channel in the third byte
-                (0xff << 24); // Alpha channel in the most significant byte
-            const unsignedPackedColor = packedColor >>> 0; // Force unsigned 32-bit representation
-            colors.set([unsignedPackedColor], i);
+                ((Math.round(r * 255) & 0xff) << 0) |
+                ((Math.round(g * 255) & 0xff) << 8) |
+                ((Math.round(b * 255) & 0xff) << 16) |
+                (0xff << 24);
+            colors.set([packedColor >>> 0], i);
+
+            const nx = pointBuffer.getFloat32(colorOffset.b + 2, true) + offset[0];
+            const nz = pointBuffer.getFloat32(colorOffset.b + 6, true) + offset[1];
+            const ny = pointBuffer.getFloat32(colorOffset.b + 10, true) + offset[2];
+            normals.set([nx, ny, nz], i * 3);
         }
 
         const centerX = (minX + maxX) / 2;
@@ -87,7 +127,6 @@ export class LasLoader {
         const centerZ = (minZ + maxZ) / 2;
         const scaleFactor = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
 
-        // Normalize positions to fit [-1, 1] in all axes
         for (let i = 0; i < positions.length; i += 3) {
             positions[i] = (positions[i] - centerX) / scaleFactor;
             positions[i + 1] = (positions[i + 1] - centerY) / scaleFactor;
@@ -97,6 +136,6 @@ export class LasLoader {
         LazPerf._free(dataPtr);
         laszip.delete();
 
-        return {positions, colors, colorsRGB, scaleFactor}
+        return { positions, colors, colorsRGB, normals, scaleFactor };
     }
 }
