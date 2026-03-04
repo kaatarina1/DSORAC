@@ -6,13 +6,16 @@ const MODE_META = {
 };
 
 export class RenderingControls {
-    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange }) {
+    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange }) {
         this.modes            = modes;
         this.currentMode      = currentMode;
         this.currentPointSize = currentPointSize;
         this.onModeChange     = onModeChange;
         this.onSizeChange     = onSizeChange;
+        this.useReconstruction = useReconstruction;
+        this.onReconstructionChange = onReconstructionChange;
         this._modeButtons     = {};
+        this._reconstructionCheckbox = null;
     }
 
     mount(container) {
@@ -67,6 +70,39 @@ export class RenderingControls {
         div.className = "rc-divider";
         panel.appendChild(div);
 
+        const reconstructionRow = document.createElement("div");
+        reconstructionRow.className = "rc-label-row";
+        this._reconstructionCheckbox = document.createElement("input");
+        this._reconstructionCheckbox.type = "checkbox";
+        this._reconstructionCheckbox.checked = this.useReconstruction;
+        this._reconstructionCheckbox.addEventListener("change", () => {
+            // Only allow changes when in POINTS mode
+            if (this.currentMode === "POINTS") {
+                this.useReconstruction = this._reconstructionCheckbox.checked;
+                if (this.onReconstructionChange) this.onReconstructionChange(this.useReconstruction);
+            } else {
+                // Reset checkbox if somehow changed when disabled
+                this._reconstructionCheckbox.checked = false;
+            }
+        });
+        const reconstructionLabel = document.createElement("label");
+        reconstructionLabel.className = "rc-checkbox-label";
+        reconstructionLabel.style.display = "flex";
+        reconstructionLabel.style.alignItems = "center";
+        reconstructionLabel.style.gap = "8px";
+        reconstructionLabel.style.cursor = "pointer";
+        reconstructionLabel.appendChild(this._reconstructionCheckbox);
+        reconstructionLabel.appendChild(document.createTextNode("Use Reconstruction"));
+        reconstructionRow.appendChild(reconstructionLabel);
+        panel.appendChild(reconstructionRow);
+
+        // Initialize checkbox state based on current mode
+        this._updateReconstructionCheckbox(this.currentMode);
+
+        const div2 = document.createElement("div");
+        div2.className = "rc-divider";
+        panel.appendChild(div2);
+
         this._infoEl = document.createElement("div");
         this._infoEl.className   = "rc-info";
         this._infoEl.textContent = (MODE_META[this.currentMode] || {}).info || "";
@@ -81,7 +117,29 @@ export class RenderingControls {
             btn.classList.toggle("active", k === mode);
         }
         this._infoEl.textContent = (MODE_META[mode] || {}).info || "";
+        
+        // Update reconstruction checkbox based on mode
+        this._updateReconstructionCheckbox(mode);
+        
         if (this.onModeChange) this.onModeChange(mode);
+    }
+
+    _updateReconstructionCheckbox(mode) {
+        if (!this._reconstructionCheckbox) return;
+        
+        const isPointsMode = mode === "POINTS";
+        this._reconstructionCheckbox.checked = isPointsMode ? this.useReconstruction : false;
+        this._reconstructionCheckbox.disabled = !isPointsMode;
+        
+        // Update label styling to show disabled state
+        const label = this._reconstructionCheckbox.parentElement;
+        if (isPointsMode) {
+            label.style.opacity = "1";
+            label.style.pointerEvents = "auto";
+        } else {
+            label.style.opacity = "0.5";
+            label.style.pointerEvents = "none";
+        }
     }
 
     _sliderToSize(v) { return 0.0001 * Math.pow(1000, v / 1000); }
@@ -138,6 +196,15 @@ export class RenderingControls {
             background: #7ec8f4; cursor: pointer; border: none;
         }
         .rc-divider { height: 1px; background: rgba(255,255,255,0.07); margin: 4px 0 10px; }
+        .rc-checkbox-label { font-size: 12px; color: #889; }
+        .rc-checkbox-label input[type="checkbox"] {
+            width: 16px; height: 16px; cursor: pointer;
+            accent-color: #7ec8f4;
+        }
+        .rc-checkbox-label input[type="checkbox"]:disabled {
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
         .rc-info { font-size: 10.5px; color: #556; line-height: 1.55; min-height: 28px; }
         `;
         document.head.appendChild(style);

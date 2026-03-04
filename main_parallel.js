@@ -346,12 +346,16 @@ function writeSceneParams(tp, camPos, pointSize) {
 // ============================================================================
 // RENDERING CONTROLS UI
 // ============================================================================
+let useReconstruction = true; // State variable for reconstruction mode
+
 const controls = new RenderingControls({
     modes: ["POINTS", "DISKS", "BILLBOARDS", "GAUSSIANS"],
     currentMode,
     currentPointSize,
+    useReconstruction,
     onModeChange: (mode) => { currentMode = mode; },
     onSizeChange: (size) => { currentPointSize = size; },
+    onReconstructionChange: (value) => { useReconstruction = value; },
 });
 controls.mount(document.body);
 
@@ -487,7 +491,6 @@ document.addEventListener("keydown", async (event) => {
 
 async function generateImagesParallel() {
     const startTime = performance.now();
-    const useReconstruction = reconstructionToggle ? reconstructionToggle.checked : true;
     const useParallelBatching = useReconstruction;
     const activeWorkerCount = useParallelBatching ? CONFIG.workerCount : 1;
     const activeBatchSize = useParallelBatching ? CONFIG.batchSize : Number.MAX_SAFE_INTEGER;
