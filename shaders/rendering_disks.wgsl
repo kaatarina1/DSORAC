@@ -21,10 +21,10 @@ struct SceneParams {
 @group(3) @binding(0) var<uniform> scene:      SceneParams;
 
 struct VertexOutput {
-    @builtin(position)              clipPosition: vec4f,
-    @location(0) @interpolate(flat) color:        vec4f,
-    @location(1)                    uv:           vec2f,
-    @location(2) @interpolate(flat) isTarget:     f32,
+    @builtin(position) clipPosition: vec4f,
+    @location(0) @interpolate(flat) color: vec4f,
+    @location(1) uv: vec2f,
+    @location(2) @interpolate(flat) isTarget: f32,
 }
 
 const CORNERS = array<vec2f, 6>(
@@ -38,9 +38,9 @@ const CORNERS = array<vec2f, 6>(
 
 @vertex
 fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
-    let pid    = vid / 6u;
+    let pid = vid / 6u;
     let corner = vid % 6u;
-    let point  = &points[pid];
+    let point = &points[pid];
     var output: VertexOutput;
 
     let toCamera = normalize(scene.cameraPos.xyz - (*point).position);
@@ -49,15 +49,15 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     if (abs(dot(toCamera, up)) > 0.99) {
         up = vec3f(1.0, 0.0, 0.0);
     }
-    let right   = normalize(cross(up, toCamera));
+    let right = normalize(cross(up, toCamera));
     let tangent = normalize(cross(toCamera, right));
 
-    let uv       = CORNERS[corner];
+    let uv = CORNERS[corner];
     let worldPos = (*point).position
                  + right   * uv.x * scene.pointSize
                  + tangent * uv.y * scene.pointSize;
 
-    let viewPos     = viewMatrix * vec4f((*point).position, 1.0);
+    let viewPos = viewMatrix * vec4f((*point).position, 1.0);
     let linearDepth = -viewPos.z;
 
     if (linearDepth < depthRange.x || linearDepth > depthRange.y) {
@@ -66,9 +66,9 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
         output.clipPosition = matrix * vec4f(worldPos, 1.0);
     }
 
-    output.uv       = uv;
+    output.uv = uv;
     output.isTarget = select(0.0, 1.0, distance((*point).position, scene.targetPosition.xyz) < 0.02);
-    output.color    = unpack4x8unorm((*point).color);
+    output.color = unpack4x8unorm((*point).color);
     return output;
 }
 

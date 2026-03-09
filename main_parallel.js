@@ -16,19 +16,19 @@ const CONFIG = {
     batchSize: 16,
     reconstructionColorOrder: "rgb",
     simpleRenderingColorOrder: "bgr",
-    hemisphereRadii: [0.17/*, 0.35, 0.95*/],
-    imagesPerCombination: 7,
+    hemisphereRadii: [0.17, 0.35, 0.95],
+    imagesPerCombination: 16,
     lasFile: "./data/cropped_filtered_normals_1.las",
     targetPositions: [
         [0, -0.17, 0],
-        // [0.1, -0.17, 0],
-        // [-0.1, -0.17, 0],
-        // [0, -0.17, 0.1],
-        // [0, -0.17, -0.1],
-        // [0.1, -0.17, 0.1],
-        // [-0.1, -0.17, 0.1],
-        // [0.1, -0.17, -0.1],
-        // [-0.1, -0.17, -0.1],
+        [0.1, -0.17, 0],
+        [-0.1, -0.17, 0],
+        [0, -0.17, 0.1],
+        [0, -0.17, -0.1],
+        [0.1, -0.17, 0.1],
+        [-0.1, -0.17, 0.1],
+        [0.1, -0.17, -0.1],
+        [-0.1, -0.17, -0.1],
     ]
 };
 
@@ -78,6 +78,7 @@ class WorkerPool {
                 data: {
                     width: config.width,
                     height: config.height,
+                    mode: currentMode,
                 }
             });
 
@@ -245,7 +246,6 @@ const device = await adapter?.requestDevice({
 });
 
 const canvas = document.querySelector("canvas");
-const reconstructionToggle = document.getElementById("reconstruction-toggle");
 canvas.width = CONFIG.canvasWidth;
 canvas.height = CONFIG.canvasHeight;
 
@@ -491,17 +491,20 @@ document.addEventListener("keydown", async (event) => {
 
 async function generateImagesParallel() {
     const startTime = performance.now();
-    const useParallelBatching = useReconstruction;
+    // Reconstruction (depth binning + SOR solver) is only meaningful for POINTS mode.
+    // Quad modes (DISKS, BILLBOARDS, GAUSSIANS) always do a direct capture.
+    const effectiveReconstruction = useReconstruction && currentMode === "POINTS";
+    const useParallelBatching = effectiveReconstruction; 
     const activeWorkerCount = useParallelBatching ? CONFIG.workerCount : 1;
     const activeBatchSize = useParallelBatching ? CONFIG.batchSize : Number.MAX_SAFE_INTEGER;
-    const colorOrder = useReconstruction
+    const colorOrder = effectiveReconstruction || currentMode === "BILLBOARDS" || currentMode === "GAUSSIANS"
         ? CONFIG.reconstructionColorOrder
-        : CONFIG.simpleRenderingColorOrder;
+        : CONFIG.reconstructionColorOrder;
 
     console.log(
         `🚀 Starting generation (${useParallelBatching ? "parallel + batched" : "single worker, no batching"})...`
     );
-    console.log(`Capture mode: ${useReconstruction ? "reconstruction" : "point cloud only"}`);
+    console.log(`Capture mode: ${effectiveReconstruction ? "reconstruction" : "point cloud only"} (mode=${currentMode})`);
     console.log(`Output color order: ${colorOrder.toUpperCase()}`);
 
     try {
@@ -534,9 +537,11 @@ async function generateImagesParallel() {
                         target: target,
                         imageIndex: imageIndex++,
                         targetPosition: target,
-                        useReconstruction,
+                        useReconstruction: effectiveReconstruction,
                         colorOrder,
-                        radius
+                        radius,
+                        mode: currentMode,
+                        pointSize: currentPointSize,
                     });
                 }
             }
@@ -562,6 +567,7 @@ async function generateImagesParallel() {
             await workerPool.initialize({
                 width: CONFIG.canvasWidth,
                 height: CONFIG.canvasHeight,
+                mode: currentMode,
             });
 
             // Obdelamo trenutni batch nalog in spremljamo napredek
