@@ -16,19 +16,22 @@ const CONFIG = {
     batchSize: 16,
     reconstructionColorOrder: "rgb",
     simpleRenderingColorOrder: "bgr",
-    hemisphereRadii: [0.17, 0.35, 0.95],
-    imagesPerCombination: 16,
-    lasFile: "./data/cropped_filtered_normals_1.las",
+    hemisphereRadii: [325, 200, 140, 110],
+    imagesPerCombination: 110,
+    lasFile: "./data/pc/fri_normals.las",
     targetPositions: [
-        [0, -0.17, 0],
-        [0.1, -0.17, 0],
-        [-0.1, -0.17, 0],
-        [0, -0.17, 0.1],
-        [0, -0.17, -0.1],
-        [0.1, -0.17, 0.1],
-        [-0.1, -0.17, 0.1],
-        [0.1, -0.17, -0.1],
-        [-0.1, -0.17, -0.1],
+        [0, 15, 0],
+        // [-40, 15, -20],
+        // [40, 15, -20],
+        // [-40, 15, 10],
+        // [40, 15, 10],
+        // [-0.1, -0.17, 0],
+        // [0, -0.17, 0.1],
+        // [0, -0.17, -0.1],
+        // [0.1, -0.17, 0.1],
+        // [-0.1, -0.17, 0.1],
+        // [0.1, -0.17, -0.1],
+        // [-0.1, -0.17, -0.1],
     ]
 };
 
@@ -327,7 +330,7 @@ const quadPipelines = {
 
 // Render mode state
 let currentMode = "POINTS";
-let currentPointSize = 0.001;
+let currentPointSize = 0.2;
 
 // SceneParams buffer
 const sceneParamsBuffer = device.createBuffer({
@@ -399,11 +402,11 @@ const matricesBindGroup = device.createBindGroup({
 });
 
 // Camera controls
-let cameraPosition = [0, 0, 0];
-let cameraTarget = [0, -0.17, 0];
+let cameraPosition = [0, 20, 0];
+let cameraTarget = [0, 0, 0];
 let yaw = 0;
-let pitch = 0;
-let distance = 0.2;
+let pitch = Math.PI / 2 - 0.1;  // Start looking down from above
+let distance = 20;
 
 const pointerController = new PointerController(canvas);
 
@@ -415,7 +418,7 @@ pointerController.addEventListener("pointermove", (e) => {
     if (e.buttons === 1) {
         yaw -= dx * sensitivity;
         pitch -= dy * sensitivity;
-        pitch = Math.max(-Math.PI + 0.1, Math.min(-0.1, pitch));
+        pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2 - 0.1, pitch));
         updateCameraOrbit();
     }
 });
@@ -431,7 +434,7 @@ function updateCameraOrbit() {
 updateCameraOrbit();
 
 document.addEventListener("keydown", (event) => {
-    const moveSpeed = 0.01;
+    const moveSpeed = 1.0;
     const forward = mat4.normalize([
         cameraTarget[0] - cameraPosition[0],
         0,
@@ -467,6 +470,7 @@ document.addEventListener("keydown", (event) => {
         case "w":
             cameraPosition[1] += moveSpeed;
             cameraTarget[1] += moveSpeed;
+            console.log("Camera Y:", cameraPosition[1].toFixed(3));
             break;
         case "s":
             cameraPosition[1] -= moveSpeed;
@@ -512,8 +516,8 @@ async function generateImagesParallel() {
         const allTasks = [];
         let imageIndex = 0;
 
-        for (const target of CONFIG.targetPositions) {
-            for (const radius of CONFIG.hemisphereRadii) {
+        for (const radius of CONFIG.hemisphereRadii) {
+            for (const target of CONFIG.targetPositions) {
                 const oversampledCount = Math.max(
                     CONFIG.imagesPerCombination * 2,
                     CONFIG.imagesPerCombination + 1
@@ -544,6 +548,14 @@ async function generateImagesParallel() {
                         pointSize: currentPointSize,
                     });
                 }
+
+                // Za prvi in drugi radij (zelo oddaljeni) generiramo slike le iz centra
+                if (radius === CONFIG.hemisphereRadii[0] || radius === CONFIG.hemisphereRadii[1]) {
+                    break;
+                } else if (target === CONFIG.targetPositions[0]) {
+                    continue;
+                }
+
             }
         }
 

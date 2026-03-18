@@ -43,11 +43,21 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let point = &points[pid];
     var output: VertexOutput;
 
-    var faceNormal = normalize((*point).normal);
-
     let toCamera = scene.cameraPos.xyz - (*point).position;
-    if (dot(faceNormal, toCamera) < 0.0) {
-        faceNormal = -faceNormal;
+    let toCameraDir = normalize(toCamera);
+
+    // Guard against zero/invalid normals — fall back to camera-facing
+    let rawNormal = (*point).normal;
+    let normalLen = length(rawNormal);
+    var faceNormal: vec3f;
+    if (normalLen < 0.001) {
+        faceNormal = toCameraDir;          // treat as billboard
+    } else {
+        faceNormal = rawNormal / normalLen; // safe normalize
+        // Flip if back-facing
+        if (dot(faceNormal, toCamera) < 0.0) {
+            faceNormal = -faceNormal;
+        }
     }
 
     var worldUp = vec3f(0.0, 1.0, 0.0);

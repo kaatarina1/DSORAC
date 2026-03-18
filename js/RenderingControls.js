@@ -142,8 +142,8 @@ export class RenderingControls {
         }
     }
 
-    _sliderToSize(v) { return 0.0001 * Math.pow(1000, v / 1000); }
-    _sizeToSlider(s) { return Math.round(1000 * Math.log(s / 0.0001) / Math.log(1000)); }
+    _sliderToSize(v) { return 0.1 + (v / 1000) * 0.9; }
+    _sizeToSlider(s) { return Math.round((s - 0.1) / 0.9 * 1000); }
     _fmt(s)          { return s < 0.01 ? s.toExponential(2) : s.toFixed(4); }
 
     _injectStyles() {

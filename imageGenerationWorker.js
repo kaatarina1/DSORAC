@@ -221,7 +221,7 @@ async function initializeWorker(config) {
         }
 
         console.log("🔧 Worker loading point cloud...");
-        const lasLoader = new LasLoader("./data/cropped_filtered_normals_1.las");
+        const lasLoader = new LasLoader("./data/pc/fri_normals.las");
         const lasData = await lasLoader.loadLasData();
         
         console.log(`📊 Worker loaded ${lasData.positions.length / 3} points`);

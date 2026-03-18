@@ -191,7 +191,7 @@ export class CameraPosition {
 		let cam = captured[0];
 		console.log("Writing cameras.txt with camera:", cam);
 		return `# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]
-        1 PINHOLE ${cam.width} ${cam.height} ${cam.fx} ${cam.fy} ${cam.cx} ${cam.cy}
+        1 PINHOLE ${cam.width} ${cam.height} ${cam.fx} ${cam.fx} ${cam.cx} ${cam.cy}
         `;
 	}
 
@@ -202,7 +202,7 @@ export class CameraPosition {
 		console.log("Writing images.txt with scale factor:", scaleFactor);
 		for (let c of captured) {
 			lines.push(
-				`${c.imageId} ${c.quat[0]} ${c.quat[1]} ${c.quat[2]} ${c.quat[3]} ${c.t[0] * scaleFactor} ${c.t[1] * scaleFactor} ${c.t[2] * scaleFactor} 1 ${c.filename}\n`
+				`${c.imageId} ${c.quat[0]} ${c.quat[1]} ${c.quat[2]} ${c.quat[3]} ${c.t[0]} ${c.t[1]} ${c.t[2]} 1 ${c.filename}\n`
 			);
 		}
 		return lines.join("\n");
@@ -211,16 +211,16 @@ export class CameraPosition {
 	writePoints3DTxt(positions, colors, scaleFactor = 1.0) {
 		const points = [];
 		const totalPoints = positions.length / 3;
-		const samplingRate = 10; // Vyorčimo vsak 10. point 
+		const samplingRate = 1; // Vyorčimo vsak 10. point 
 		
 		console.log(`Writing points3D.txt with scale factor: ${scaleFactor}, sampling rate: ${samplingRate} (from ${totalPoints} points)`);
 		
 		for (let pointIndex = 0; pointIndex < totalPoints; pointIndex += samplingRate) {
 			const i = pointIndex * 3;
 			points.push({
-				x: positions[i] * scaleFactor,
-				y: positions[i + 1] * scaleFactor,
-				z: positions[i + 2] * scaleFactor,
+				x: positions[i],
+				y: positions[i + 1],
+				z: positions[i + 2],
 				r: Math.round(colors[i] * 255),
 				g: Math.round(colors[i + 1] * 255),
 				b: Math.round(colors[i + 2] * 255),

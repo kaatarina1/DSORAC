@@ -18,6 +18,20 @@ const COLOR_OFFSETS = {
     10: { r: 30, g: 32, b: 34 }, // Format 9 + RGB (RGB vrednosti pred dodatnimi polji, ki jih ima format 9)
 };
 
+const NORMAL_OFFSETS = {
+    0: null,  // Brez normal
+    1: null,  // Brez normal
+    2: { x: 26, y: 30, z: 34 },  // Format 2: RGB at 20-24, normals would be after
+    3: { x: 34, y: 38, z: 42 },  // Format 3: After GPS time + RGB
+    4: null,  // Brez normal
+    5: { x: 34, y: 38, z: 42 },  // Format 5: After GPS time + RGB
+    6: null,  // Brez normal
+    7: { x: 36, y: 40, z: 44 },  // Format 7: Standard 48 bytes + NIR, normals after
+    8: { x: 38, y: 42, z: 46 },  // Format 8: Standard 50 bytes + 3 float32 normals (4+4+4=12 bytes)
+    9: null,  // Brez normal
+    10: { x: 36, y: 40, z: 44 }, // Format 10: Similar to 8 but different layout
+};
+
 export class LasLoader {
 	constructor(filename) {
         this.lasName = filename;
@@ -44,8 +58,13 @@ export class LasLoader {
         console.log(`Point format: ${pointDataRecordFormat}, record length: ${pointDataRecordLength} bytes`);
 
         const colorOffset = COLOR_OFFSETS[pointDataRecordFormat] ?? null;
+        const normalOffset = NORMAL_OFFSETS[pointDataRecordFormat] ?? null;
         const hasColor = colorOffset !== null && 
                          pointDataRecordLength >= (colorOffset.b + 2);
+        const hasNormals = normalOffset !== null && 
+                           pointDataRecordLength >= (normalOffset.z + 4);
+
+        console.log(`Point record length: ${pointDataRecordLength} bytes, has normals: ${hasNormals}`);
 
         if (!hasColor) {
             console.warn(
@@ -90,7 +109,7 @@ export class LasLoader {
             );
 
             const x = pointBuffer.getInt32(0, true) * scale[0] + offset[0];
-            const z = pointBuffer.getInt32(4, true) * scale[1] + offset[1];
+            const z = -pointBuffer.getInt32(4, true) * scale[1] + offset[1];
             const y = pointBuffer.getInt32(8, true) * scale[2] + offset[2];
 
             let r = 1.0, g = 1.0, b = 1.0; // default white
@@ -116,21 +135,20 @@ export class LasLoader {
                 (0xff << 24);
             colors.set([packedColor >>> 0], i);
 
-            const nx = pointBuffer.getFloat32(colorOffset.b + 2, true) + offset[0];
-            const nz = pointBuffer.getFloat32(colorOffset.b + 6, true) + offset[1];
-            const ny = pointBuffer.getFloat32(colorOffset.b + 10, true) + offset[2];
-            normals.set([nx, ny, nz], i * 3);
+            const nx = pointBuffer.getFloat32(normalOffset.x, true);
+            const nz = pointBuffer.getFloat32(normalOffset.z, true);
+            const ny = pointBuffer.getFloat32(normalOffset.y, true);
+            normals.set([nx, nz, ny], i * 3);
         }
 
         const centerX = (minX + maxX) / 2;
-        const centerY = (minY + maxY) / 2;
         const centerZ = (minZ + maxZ) / 2;
         const scaleFactor = Math.max(maxX - minX, maxY - minY, maxZ - minZ);
 
         for (let i = 0; i < positions.length; i += 3) {
-            positions[i] = (positions[i] - centerX) / scaleFactor;
-            positions[i + 1] = (positions[i + 1] - centerY) / scaleFactor;
-            positions[i + 2] = (positions[i + 2] - centerZ) / scaleFactor;
+            positions[i] = (positions[i] - centerX);
+            positions[i + 1] = (positions[i + 1] - minY);      // Use minY instead of centerY
+            positions[i + 2] = (positions[i + 2] - centerZ);
         }
         LazPerf._free(filePtr);
         LazPerf._free(dataPtr);
