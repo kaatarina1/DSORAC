@@ -331,3 +331,15 @@ export function cameraToColmapPoseFromTarget(cameraPos, target, up = [0, 1, 0]) 
         t: translation
     };
 }
+
+export function orthographic(left, right, bottom, top, near, far) {
+    const out = zero();
+    out[0]  =  2 / (right - left);
+    out[5]  =  2 / (top - bottom);
+    out[10] = -2 / (far - near);
+    out[12] = -(right + left) / (right - left);
+    out[13] = -(top + bottom) / (top - bottom);
+    out[14] = -(far + near)   / (far - near);
+    out[15] =  1;
+    return out;
+}

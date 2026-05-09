@@ -211,7 +211,7 @@ export class CameraPosition {
 	writePoints3DTxt(positions, colors, scaleFactor = 1.0) {
 		const points = [];
 		const totalPoints = positions.length / 3;
-		const samplingRate = 1; // Vyorčimo vsak 10. point 
+		const samplingRate = 2; // Vyorčimo vsak 5. point 
 		
 		console.log(`Writing points3D.txt with scale factor: ${scaleFactor}, sampling rate: ${samplingRate} (from ${totalPoints} points)`);
 		
@@ -238,5 +238,36 @@ export class CameraPosition {
 				)
 				.join("\n")
 		);
+	}
+
+	computeOrthoTopDownMatrix(eyeY, panX, panZ, zoom, canvas, bbMin, bbMax) {
+		const eye    = [panX, eyeY, panZ];
+		const target = [panX, eyeY - 1, panZ]; // straight down
+		const up     = [0, 0, 1];              // +Z at screen top
+
+		const viewMatrix = mat4.lookAt(eye, target, up);
+		
+		const near = 0.1;
+		const far  = Math.max(1.0, eyeY - bbMin[1] + 1.0);
+
+		const aspect = canvas.width / canvas.height;
+		let halfH, halfW;
+		if (canvas.width <= canvas.height) {
+			halfW = zoom;
+			halfH = zoom / aspect;
+		} else {
+			halfH = zoom;
+			halfW = zoom * aspect;
+		}
+
+		const projectionMatrix = mat4.orthographic(
+			-halfW,  halfW,
+			-halfH,  halfH,
+			near,    far
+		);
+
+		const projectionViewMatrix = mat4.multiply(projectionMatrix, viewMatrix);
+
+		return { viewMatrix, projectionMatrix, projectionViewMatrix, near, far };
 	}
 }

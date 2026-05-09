@@ -13,14 +13,14 @@ const CONFIG = {
     canvasWidth: 1024,
     canvasHeight: 512,
     workerCount: Math.min(7, navigator.hardwareConcurrency || 6),
-    batchSize: 16,
+    batchSize: 20,
     reconstructionColorOrder: "rgb",
     simpleRenderingColorOrder: "bgr",
-    hemisphereRadii: [325, 200, 140, 110],
+    hemisphereRadii: [/*325, 200, 140, 110*/, 1],
     imagesPerCombination: 110,
-    lasFile: "./data/pc/fri_normals.las",
+    lasFile: "./data/pc/room_normals.las",
     targetPositions: [
-        [0, 15, 0],
+        [0, 0, 0],
         // [-40, 15, -20],
         // [40, 15, -20],
         // [-40, 15, 10],
@@ -351,6 +351,20 @@ function writeSceneParams(tp, camPos, pointSize) {
 // ============================================================================
 let useReconstruction = true; // State variable for reconstruction mode
 
+// ── Ortho top-down camera state ──────────────────────────────────────────────
+let orthoMode  = false;
+const sceneHeight = bbMax[1] - bbMin[1];
+const sceneCX  = (bbMin[0] + bbMax[0]) / 2;
+const sceneCZ  = (bbMin[2] + bbMax[2]) / 2;
+let orthoEyeY  = bbMax[1] + sceneHeight * 0.8;
+let orthoPanX  = sceneCX;
+let orthoPanZ  = sceneCZ;
+let orthoZoom  = Math.max(
+    (bbMax[0] - bbMin[0]) / 2,
+    (bbMax[2] - bbMin[2]) / 2
+) * 1.15;
+// ─────────────────────────────────────────────────────────────────────────────
+
 const controls = new RenderingControls({
     modes: ["POINTS", "DISKS", "BILLBOARDS", "GAUSSIANS"],
     currentMode,
@@ -415,7 +429,21 @@ pointerController.addEventListener("pointermove", (e) => {
     const dy = e.movementY;
     const sensitivity = 0.005;
     
-    if (e.buttons === 1) {
+    if (orthoMode) {
+        const aspect = canvas.width / canvas.height;
+        let halfW, halfH;
+        if (canvas.width <= canvas.height) {
+            halfW = orthoZoom;
+            halfH = orthoZoom / aspect;
+        } else {
+            halfH = orthoZoom;
+            halfW = orthoZoom * aspect;
+        }
+        const worldPerPixelX = (2 * halfW) / canvas.width;
+        const worldPerPixelZ = (2 * halfH) / canvas.height;
+        orthoPanX -= dx * worldPerPixelX;
+        orthoPanZ -= dy * worldPerPixelZ;
+    } else {
         yaw -= dx * sensitivity;
         pitch -= dy * sensitivity;
         pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2 - 0.1, pitch));
@@ -434,6 +462,26 @@ function updateCameraOrbit() {
 updateCameraOrbit();
 
 document.addEventListener("keydown", (event) => {
+     if (orthoMode) {
+        const panStep    = orthoZoom * 0.05;
+        const heightStep = sceneHeight * 0.05;
+        switch (event.key) {
+            case "ArrowLeft":  orthoPanX -= panStep; break;
+            case "ArrowRight": orthoPanX += panStep; break;
+            case "ArrowUp":    orthoPanZ -= panStep; break;
+            case "ArrowDown":  orthoPanZ += panStep; break;
+            case "w": case "W":
+                orthoEyeY += heightStep;
+                console.log(`Ortho eye Y: ${orthoEyeY.toFixed(2)}`);
+                break;
+            case "s": case "S":
+                orthoEyeY -= heightStep;
+                orthoEyeY = Math.max(bbMax[1] + 0.5, orthoEyeY);
+                console.log(`Ortho eye Y: ${orthoEyeY.toFixed(2)}`);
+                break;
+        }
+        return; // don't fall through to perspective controls
+    }
     const moveSpeed = 1.0;
     const forward = mat4.normalize([
         cameraTarget[0] - cameraPosition[0],
@@ -535,9 +583,9 @@ async function generateImagesParallel() {
                     `Generated ${selectedPoses.length}/${CONFIG.imagesPerCombination} camera poses around target ${target} at radius ${radius}`
                 );
 
-                for (const pos of selectedPoses) {
+                //for (const pos of selectedPoses) {
                     allTasks.push({
-                        cameraPosition: pos,
+                        cameraPosition: selectedPoses[50],
                         target: target,
                         imageIndex: imageIndex++,
                         targetPosition: target,
@@ -547,7 +595,7 @@ async function generateImagesParallel() {
                         mode: currentMode,
                         pointSize: currentPointSize,
                     });
-                }
+                //}
 
                 // Za prvi in drugi radij (zelo oddaljeni) generiramo slike le iz centra
                 if (radius === CONFIG.hemisphereRadii[0] || radius === CONFIG.hemisphereRadii[1]) {
@@ -941,9 +989,21 @@ function frame() {
     }
 
     // Compute matrices with tight near/far from bounding box
-    const { viewMatrix, projectionViewMatrix, near, far } =
-        camPositionHelper.computeCameraMatrix(cameraPosition, cameraTarget, canvas, bbMin, bbMax);
+    let viewMatrix, projectionViewMatrix;
 
+    if (orthoMode) {
+        const result = camPositionHelper.computeOrthoTopDownMatrix(
+            orthoEyeY, orthoPanX, orthoPanZ, orthoZoom, canvas, bbMin, bbMax
+        );
+        viewMatrix           = result.viewMatrix;
+        projectionViewMatrix = result.projectionViewMatrix;
+    } else {
+        const result = camPositionHelper.computeCameraMatrix(
+            cameraPosition, cameraTarget, canvas, bbMin, bbMax
+        );
+        viewMatrix           = result.viewMatrix;
+        projectionViewMatrix = result.projectionViewMatrix;
+    }
     device.queue.writeBuffer(mvpBuffer, 0, new Float32Array(projectionViewMatrix));
     device.queue.writeBuffer(viewMatrixBuffer, 0, new Float32Array(viewMatrix));
 
@@ -1005,8 +1065,7 @@ function frame() {
             SORT = false;
         }
         // Quad shader path — group(3) so SceneParams { targetPosition, cameraPos, pointSize }
-        writeSceneParams(tp, cameraPosition, currentPointSize);
-
+        writeSceneParams(tp, orthoMode ? [orthoPanX, orthoEyeY, orthoPanZ] : cameraPosition, currentPointSize);
         const pipeline = quadPipelines[currentMode];
         const depthRangeBindGroup = device.createBindGroup({
             layout: pipeline.getBindGroupLayout(2),
@@ -1069,3 +1128,95 @@ Batch size: 20 images (auto-restart)
 Press 'T' to start
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
+
+function buildOrthoButton() {
+    if (!document.getElementById('ortho-btn-styles')) {
+        const style = document.createElement('style');
+        style.id = 'ortho-btn-styles';
+        style.textContent = `
+        #ortho-toggle-btn {
+            position: fixed;
+            top: 16px;
+            right: 252px;
+            z-index: 1000;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 9px 14px;
+            background: rgba(12,12,18,0.88);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 10px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 12px;
+            color: #aab;
+            cursor: pointer;
+            user-select: none;
+            transition: background 0.12s, border-color 0.12s, color 0.12s;
+            white-space: nowrap;
+        }
+        #ortho-toggle-btn:hover {
+            background: rgba(255,255,255,0.1);
+            color: #eef;
+        }
+        #ortho-toggle-btn.active {
+            background: rgba(99,179,237,0.18);
+            border-color: rgba(99,179,237,0.55);
+            color: #7ec8f4;
+            font-weight: 600;
+        }
+        #ortho-hint {
+            position: fixed;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            padding: 7px 16px;
+            background: rgba(12,12,18,0.82);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(99,179,237,0.3);
+            border-radius: 8px;
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 11px;
+            color: #7ec8f4;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.25s;
+        }
+        #ortho-hint.visible { opacity: 1; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    const btn = document.createElement('button');
+    btn.id = 'ortho-toggle-btn';
+    btn.innerHTML = `<span>⊡</span> Top-Down`;
+    btn.addEventListener('click', () => {
+        orthoMode = !orthoMode;
+        btn.classList.toggle('active', orthoMode);
+        btn.innerHTML = orthoMode
+            ? `<span>⊡</span> Top-Down <span style="font-size:10px;opacity:.7">[ON]</span>`
+            : `<span>⊡</span> Top-Down`;
+        hint.classList.toggle('visible', orthoMode);
+    });
+    document.body.appendChild(btn);
+
+    const hint = document.createElement('div');
+    hint.id = 'ortho-hint';
+    hint.textContent = 'W/S — move up/down  ·  Arrow keys — pan  ·  Scroll — zoom';
+    document.body.appendChild(hint);
+}
+
+buildOrthoButton();
+
+canvas.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    if (orthoMode) {
+        const factor = e.deltaY > 0 ? 1.1 : 0.9;
+        orthoZoom = Math.max(0.5, orthoZoom * factor);
+    } else {
+        distance = Math.max(0.5, distance + e.deltaY * 0.01);
+        updateCameraOrbit();
+    }
+}, { passive: false });
