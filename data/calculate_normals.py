@@ -4,6 +4,7 @@ import laspy
 import struct
 import io
 
+name = "room"
 # Potrebno, da zagotovimo pravilno izvaja tudi če ima LAS datoteka že obstoječe (a napačne/duplikatne) 
 # VLR-je z ekstra dimenzijami, ki bi lahko motili naš izračun normal. 
 # Ta funkcija prebere surove bajte LAS datoteke, identificira in odstrani vse VLR-je z ekstra dimenzijami, 
@@ -85,12 +86,12 @@ def fix_duplicate_extra_bytes(path):
     new_num_vlrs = num_vlrs - len(eb_vlr_indices) + (1 if clean_records else 0)
     struct.pack_into("<I", raw, 100, new_num_vlrs)
 
-    print(f"  Rebuilt: {len(clean_records)} non-normal extra dims kept, {new_num_vlrs} VLRs total")
+    print(f"  Rebuilt: {len(clean_records)} non-normal extra dims kept, {new_num_vlrs} VLRs total")    
     return io.BytesIO(bytes(raw))
 
 
 # Naložimo LAS datoteko
-path = "cropped_filtered_1.las"
+path = name + ".las"
 
 # Počistimo morebitne problematične VLR-je z ekstra dimenzijami, ki bi lahko motili izračun normal
 print("Patching raw bytes to remove duplicate/stale extra dims...")
@@ -115,13 +116,13 @@ pcd.points = o3d.utility.Vector3dVector(points)
 pcd.colors = o3d.utility.Vector3dVector(colors)
 
 # Počistimo outlierje, da ne bodo motili normal
-pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=64, std_ratio=5.0)
+# pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=64, std_ratio=5.0)
 print(f"After cleaning: {len(pcd.points)} points kept")
 
 # Izračun normal na downsampled oblaku, da bo hitreje in stabilneje 
 pcd_down = pcd.voxel_down_sample(voxel_size=0.05) 
 pcd_down.estimate_normals(
-    search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=1.0, max_nn=64)
+    search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=100.0, max_nn=512)
 )
 
 pts = np.asarray(pcd.points)
@@ -182,8 +183,16 @@ out.nx    = normals[:, 0].astype(np.float32)
 out.ny    = normals[:, 1].astype(np.float32)
 out.nz    = normals[:, 2].astype(np.float32)
 
-out.write("cropped_filtered_normals_1.las")
-print("Saved → cropped_filtered_normals.las")
+out.write(name + "_normals.las")
+print("Saved → " + name + "_normals.las")
+
+las = laspy.read(name + "_normals.las")
+
+print(las.point_format)
+print(las.point_format.dimension_names)
+
+# Structured array dtype — the ground truth
+print(las.points.array.dtype)
 
 lengths = np.linalg.norm(normals, axis=1)
 print(f"Normal x: [{normals[:,0].min():.3f}, {normals[:,0].max():.3f}]")
