@@ -1,6 +1,10 @@
 node_modules
 package-lock.json
 *.las
+*.laz
 *.txt
 .vscode
 js/temp.js
+*.ply
+*.zip
+.DS_Store

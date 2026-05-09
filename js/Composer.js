@@ -428,6 +428,7 @@ export class Composer {
 			},
 			format: "rgba32float",
 			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+			dimension: "2d",
 		});
 
 		const sdfTextures = this.device.createTexture({
@@ -438,6 +439,7 @@ export class Composer {
 			},
 			format: "rgba32float",
 			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+			dimension: "2d",
 		});
 
 		const pointsTexture = this.device.createTexture({
@@ -448,6 +450,7 @@ export class Composer {
 			},
 			format: "rgba32float",
 			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+			dimension: "2d",
 		});
 
 		const outputTexture = this.device.createTexture({
@@ -519,15 +522,21 @@ export class Composer {
 			entries: [
 				{
 					binding: 0,
-					resource: reconstructionTextures.createView(),
+					resource: reconstructionTextures.createView({
+						dimension: "2d-array",
+					}),
 				},
 				{
 					binding: 1,
-					resource: sdfTextures.createView(),
+					resource: sdfTextures.createView({
+						dimension: "2d-array",
+					}),
 				},
 				{
 					binding: 2,
-					resource: pointsTexture.createView(),
+					resource: pointsTexture.createView({
+						dimension: "2d-array",
+					}),
 				},
 				{
 					binding: 3,

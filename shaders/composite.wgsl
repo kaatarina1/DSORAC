@@ -69,8 +69,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let k = mix(30.0, 9000.0, closeness);
         let sdfAlpha = exp(-(sdfDist * sdfDist * k));
 
-        // Max SDF razdalja: back=dovolimo veliko (0.5), front=dovolimo le bližnje (0.15)
-        let maxDist = mix(0.5, 0.15, closeness);
+        // Max SDF razdalja: back=dovolimo veliko (0.3), front=dovolimo le bližnje (0.15)
+        let maxDist = mix(0.2, 0.15, closeness);
 
         // Base alpha strategija:
         //   zadnje plasti → zaupajo rekonstrukciji skoraj popolnoma
@@ -83,7 +83,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             alpha = 0.95;
         } else {
             // Rekonstruirani piksel: zadnje plasti dobijo visoko alpha, sprednje dobijo SDF-modulirano
-            let baseAlpha = mix(0.85, 0.6, closeness);
+            let baseAlpha = mix(0.99, 0.8, closeness);
             alpha = baseAlpha * sdfAlpha;
         }
 
