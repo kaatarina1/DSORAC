@@ -9,7 +9,7 @@ const COLOR_OFFSETS = {
     1: null,  // Brez barve
     2: { r: 20, g: 22, b: 24 },  // Barva se nahaja na offsetih 20, 22, 24 (16 bajtov do RGB)
     3: { r: 28, g: 30, b: 32 },  // Format 2 + GPS Time(8) = 28 (najprej ima GPS Time, potem RGB)
-    4: null,  // Brez barve
+    4: { r: 20, g: 22, b: 24},  // Brez barve
     5: { r: 28, g: 30, b: 32 },  // Enako kot format 3, vendar za barvo ima še dodatna polja
     6: null,  // Brez barve
     7: { r: 30, g: 32, b: 34 },  // Format 6 + RGB
@@ -18,12 +18,20 @@ const COLOR_OFFSETS = {
     10: { r: 30, g: 32, b: 34 }, // Format 9 + RGB (RGB vrednosti pred dodatnimi polji, ki jih ima format 9)
 };
 
+// Class IDs are stored in user_data (byte 17) for LAS 1.2 formats (0-5),
+// because the classification field there is only 5 bits (max 31).
+// For LAS 1.4 formats (6-10), the classification field is a full uint8 at byte 16.
+const CLASSIFICATION_OFFSETS = {
+    0: 17, 1: 17, 2: 17, 3: 17, 4: 17, 5: 17,
+    6: 16, 7: 16, 8: 16, 9: 16, 10: 16,
+};
+
 const NORMAL_OFFSETS = {
     0: null,  // Brez normal
     1: null,  // Brez normal
     2: { x: 26, y: 30, z: 34 },  // Format 2: RGB at 20-24, normals would be after
     3: { x: 34, y: 38, z: 42 },  // Format 3: After GPS time + RGB
-    4: null,  // Brez normal
+    4: { x: 26, y: 30, z: 34 },  // Brez normal
     5: { x: 34, y: 38, z: 42 },  // Format 5: After GPS time + RGB
     6: null,  // Brez normal
     7: { x: 36, y: 40, z: 44 },  // Format 7: Standard 48 bytes + NIR, normals after
@@ -87,10 +95,12 @@ export class LasLoader {
 
         laszip.open(filePtr, file.byteLength);
 
+        const classOffset = CLASSIFICATION_OFFSETS[pointDataRecordFormat] ?? 15;
         const positions = new Float32Array(laszip.getCount() * 3);
         const colorsRGB = new Float32Array(laszip.getCount() * 3);
         const colors = new Uint32Array(laszip.getCount());
-        const normals =  new Float32Array(laszip.getCount() * 3);
+        const normals = new Float32Array(laszip.getCount() * 3);
+        const classifications = new Uint8Array(laszip.getCount());
 
         let minX = Infinity,
             minY = Infinity,
@@ -139,6 +149,7 @@ export class LasLoader {
             const nz = pointBuffer.getFloat32(normalOffset.z, true);
             const ny = pointBuffer.getFloat32(normalOffset.y, true);
             normals.set([nx, nz, ny], i * 3);
+            classifications[i] = pointBuffer.getUint8(classOffset);
         }
 
         const centerX = (minX + maxX) / 2;
@@ -154,6 +165,6 @@ export class LasLoader {
         LazPerf._free(dataPtr);
         laszip.delete();
 
-        return { positions, colors, colorsRGB, normals, scaleFactor };
+        return { positions, colors, colorsRGB, normals, classifications, scaleFactor };
     }
 }

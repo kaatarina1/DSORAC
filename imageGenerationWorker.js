@@ -16,6 +16,10 @@ let globalSortPipeline = null;
 let quadPipelines = {};
 let pointclouds = [];
 let canvas = null;
+// Dummy buffers za rendering.wgsl group-0 bindingi 1 & 2 (classColors / useClassColors).
+// Worker zajema le RGB slike scene, se pravi nikoli ne upodablja scene z barvami razredov
+let dummyClassColorsBuffer = null;
+let useClassColorsBuffer   = null;
 let format = null;
 let deviceLost = false;
 let deviceLostPromise = null;
@@ -220,14 +224,25 @@ async function initializeWorker(config) {
             console.log("   Sorting will be skipped if requested");
         }
 
+        // Dummy bufferji za rendering.wgsl group-0 bindingi 1 & 2.
+        dummyClassColorsBuffer = device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+        useClassColorsBuffer = device.createBuffer({
+            size: 4,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+        device.queue.writeBuffer(useClassColorsBuffer, 0, new Uint32Array([0]));
+
         console.log("🔧 Worker loading point cloud...");
-        const lasLoader = new LasLoader("./data/pc/fri_normals.las");
+        const lasLoader = new LasLoader("./data/pc/room_normals.las");
         const lasData = await lasLoader.loadLasData();
-        
+
         console.log(`📊 Worker loaded ${lasData.positions.length / 3} points`);
-        
-        // Izračunamo bounding box oblaka točk, 
-        // da ga lahko uporabimo za nastavitev near/far 
+
+        // Izračunamo bounding box oblaka točk,
+        // da ga lahko uporabimo za nastavitev near/far
         // ravnin kamere in za normalizacijo globin
         const positions = lasData.positions;
         bbMin = [Infinity, Infinity, Infinity];
@@ -241,7 +256,7 @@ async function initializeWorker(config) {
             bbMax[2] = Math.max(bbMax[2], positions[i + 2]);
         }
         console.log("📐 Point cloud bounding box:", bbMin, bbMax);
-        
+
         await createPointClouds(positions, lasData.colors, lasData.normals);
         
         if (preparationPipeline && localSortPipeline && globalSortPipeline) {
@@ -318,7 +333,11 @@ async function createPointClouds(positions, colors, normals) {
 
         const renderingBindGroup = device.createBindGroup({
             layout: renderingPipeline.getBindGroupLayout(0),
-            entries: [{ binding: 0, resource: { buffer: pointBuffer } }],
+            entries: [
+                { binding: 0, resource: { buffer: pointBuffer } },
+                { binding: 1, resource: { buffer: dummyClassColorsBuffer } },
+                { binding: 2, resource: { buffer: useClassColorsBuffer } },
+            ],
         });
 
         pointclouds.push({
@@ -802,7 +821,11 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
         for (const { pc } of batchesWithDepth) {
             renderPass.setBindGroup(0, device.createBindGroup({
                 layout: renderingPipeline.getBindGroupLayout(0),
-                entries: [{ binding: 0, resource: { buffer: pc.pointBuffer } }],
+                entries: [
+                    { binding: 0, resource: { buffer: pc.pointBuffer } },
+                    { binding: 1, resource: { buffer: dummyClassColorsBuffer } },
+                    { binding: 2, resource: { buffer: useClassColorsBuffer } },
+                ],
             }));
             renderPass.draw(pc.numberOfPoints);
         }

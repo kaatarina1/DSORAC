@@ -6,7 +6,7 @@ const MODE_META = {
 };
 
 export class RenderingControls {
-    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange }) {
+    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onClassColorChange }) {
         this.modes            = modes;
         this.currentMode      = currentMode;
         this.currentPointSize = currentPointSize;
@@ -14,13 +14,25 @@ export class RenderingControls {
         this.onSizeChange     = onSizeChange;
         this.useReconstruction = useReconstruction;
         this.onReconstructionChange = onReconstructionChange;
+        this.onOrthoChange      = onOrthoChange;
+        this.onClassColorChange = onClassColorChange;
+        this.orthoMode          = false;
+        this.classColorMode     = false;
         this._modeButtons     = {};
         this._reconstructionCheckbox = null;
+        this._orthoBtn        = null;
+        this._orthoHint       = null;
+        this._classBtn        = null;
     }
 
     mount(container) {
         this._injectStyles();
         container.appendChild(this._buildPanel());
+        const hint = document.createElement('div');
+        hint.id = 'ortho-hint';
+        hint.textContent = 'W/S — move up/down  ·  Arrow keys — pan  ·  Scroll — zoom';
+        this._orthoHint = hint;
+        document.body.appendChild(hint);
     }
 
     _buildPanel() {
@@ -108,6 +120,44 @@ export class RenderingControls {
         this._infoEl.textContent = (MODE_META[this.currentMode] || {}).info || "";
         panel.appendChild(this._infoEl);
 
+        const div3 = document.createElement("div");
+        div3.className = "rc-divider";
+        panel.appendChild(div3);
+
+        const classBtn = document.createElement("button");
+        classBtn.className = "rc-ortho-btn";
+        classBtn.innerHTML = `<span>◈</span> Classification`;
+        classBtn.addEventListener('click', () => {
+            if (this.currentMode !== "POINTS") return;
+            this.classColorMode = !this.classColorMode;
+            classBtn.classList.toggle('active', this.classColorMode);
+            classBtn.innerHTML = this.classColorMode
+                ? `<span>◈</span> Classification <span class="rc-ortho-tag">[ON]</span>`
+                : `<span>◈</span> Classification`;
+            if (this.onClassColorChange) this.onClassColorChange(this.classColorMode);
+        });
+        this._classBtn = classBtn;
+        panel.appendChild(classBtn);
+
+        const div4 = document.createElement("div");
+        div4.className = "rc-divider";
+        panel.appendChild(div4);
+
+        const orthoBtn = document.createElement("button");
+        orthoBtn.className = "rc-ortho-btn";
+        orthoBtn.innerHTML = `<span>⊡</span> Top-Down`;
+        orthoBtn.addEventListener('click', () => {
+            this.orthoMode = !this.orthoMode;
+            orthoBtn.classList.toggle('active', this.orthoMode);
+            orthoBtn.innerHTML = this.orthoMode
+                ? `<span>⊡</span> Top-Down <span class="rc-ortho-tag">[ON]</span>`
+                : `<span>⊡</span> Top-Down`;
+            if (this._orthoHint) this._orthoHint.classList.toggle('visible', this.orthoMode);
+            if (this.onOrthoChange) this.onOrthoChange(this.orthoMode);
+        });
+        this._orthoBtn = orthoBtn;
+        panel.appendChild(orthoBtn);
+
         return panel;
     }
 
@@ -126,23 +176,29 @@ export class RenderingControls {
 
     _updateReconstructionCheckbox(mode) {
         if (!this._reconstructionCheckbox) return;
-        
+
         const isPointsMode = mode === "POINTS";
         this._reconstructionCheckbox.checked = isPointsMode ? this.useReconstruction : false;
         this._reconstructionCheckbox.disabled = !isPointsMode;
-        
-        // Update label styling to show disabled state
+
         const label = this._reconstructionCheckbox.parentElement;
-        if (isPointsMode) {
-            label.style.opacity = "1";
-            label.style.pointerEvents = "auto";
-        } else {
-            label.style.opacity = "0.5";
-            label.style.pointerEvents = "none";
+        label.style.opacity = isPointsMode ? "1" : "0.5";
+        label.style.pointerEvents = isPointsMode ? "auto" : "none";
+
+        if (this._classBtn) {
+            if (!isPointsMode && this.classColorMode) {
+                // turn off class colors when leaving POINTS mode
+                this.classColorMode = false;
+                this._classBtn.classList.remove('active');
+                this._classBtn.innerHTML = `<span>◈</span> Classification`;
+                if (this.onClassColorChange) this.onClassColorChange(false);
+            }
+            this._classBtn.style.opacity = isPointsMode ? "1" : "0.5";
+            this._classBtn.style.pointerEvents = isPointsMode ? "auto" : "none";
         }
     }
 
-    _sliderToSize(v) { return 0.1 + (v / 1000) * 0.9; }
+    _sliderToSize(v) { return 0.02 + (v / 1000) * 0.9; }
     _sizeToSlider(s) { return Math.round((s - 0.1) / 0.9 * 1000); }
     _fmt(s)          { return s < 0.01 ? s.toExponential(2) : s.toFixed(4); }
 
@@ -206,6 +262,29 @@ export class RenderingControls {
             opacity: 0.5;
         }
         .rc-info { font-size: 10.5px; color: #556; line-height: 1.55; min-height: 28px; }
+        .rc-ortho-btn {
+            width: 100%; display: flex; align-items: center; gap: 7px;
+            padding: 8px 10px; margin-top: 2px;
+            background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.09);
+            border-radius: 8px; font-family: system-ui, -apple-system, sans-serif;
+            font-size: 12px; color: #aab; cursor: pointer; user-select: none;
+            transition: background 0.12s, border-color 0.12s, color 0.12s; white-space: nowrap;
+        }
+        .rc-ortho-btn:hover { background: rgba(255,255,255,0.1); color: #eef; }
+        .rc-ortho-btn.active {
+            background: rgba(99,179,237,0.18); border-color: rgba(99,179,237,0.55);
+            color: #7ec8f4; font-weight: 600;
+        }
+        .rc-ortho-tag { font-size: 10px; opacity: 0.7; }
+        #ortho-hint {
+            position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+            z-index: 1000; padding: 7px 16px;
+            background: rgba(12,12,18,0.82); backdrop-filter: blur(8px);
+            border: 1px solid rgba(99,179,237,0.3); border-radius: 8px;
+            font-family: system-ui, -apple-system, sans-serif; font-size: 11px;
+            color: #7ec8f4; pointer-events: none; opacity: 0; transition: opacity 0.25s;
+        }
+        #ortho-hint.visible { opacity: 1; }
         `;
         document.head.appendChild(style);
     }

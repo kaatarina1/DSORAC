@@ -266,6 +266,50 @@ const colors = lasData.colors;
 const colorsRGB = lasData.colorsRGB;
 const scaleFactor = lasData.scaleFactor;
 const normals = lasData.normals;
+const classifications = lasData.classifications;
+
+function hslToRgb(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(((h * 6) % 2) - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    const sec = Math.floor(h * 6) % 6;
+    if      (sec === 0) { r = c; g = x; }
+    else if (sec === 1) { r = x; g = c; }
+    else if (sec === 2) {        g = c; b = x; }
+    else if (sec === 3) {        g = x; b = c; }
+    else if (sec === 4) { r = x;        b = c; }
+    else                { r = c;        b = x; }
+    return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
+}
+
+const classPalette = new Uint32Array(256);
+classPalette[0] = 0xFF808080; // class 0 (unclassified) = grey
+const golden = 0.6180339887;
+for (let ci = 1; ci < 256; ci++) {
+    const [r, g, b] = hslToRgb((ci * golden) % 1.0, 0.75, 0.55);
+    classPalette[ci] = (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
+}
+const classColors = new Uint32Array(positions.length / 3);
+for (let i = 0; i < classColors.length; i++) {
+    classColors[i] = classPalette[classifications[i]];
+}
+
+// Log class -> color mapping (only classes that actually appear in the data)
+const presentClasses = new Map();
+for (const cls of classifications) {
+    if (!presentClasses.has(cls)) {
+        const packed = classPalette[cls];
+        const r = (packed >>  0) & 0xFF;
+        const g = (packed >>  8) & 0xFF;
+        const b = (packed >> 16) & 0xFF;
+        presentClasses.set(cls, `rgb(${r}, ${g}, ${b})`);
+    }
+}
+console.log(`Class → color mapping (${presentClasses.size} classes):`);
+for (const [cls, color] of [...presentClasses].sort((a, b) => a[0] - b[0])) {
+    console.log(`  %c  %c class ${cls} → ${color}`, `background:${color};padding:0 8px`, 'background:none');
+}
 
 console.log(`Loaded ${positions.length / 3} points`);
 
@@ -346,6 +390,14 @@ function writeSceneParams(tp, camPos, pointSize) {
     device.queue.writeBuffer(sceneParamsBuffer, 0, data);
 }
 
+// Barva ob upodabljanju razredov po segmentaciji
+let showClassColors = false;
+const classUniformBuffer = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+});
+device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([0, 0, 0, 0]));
+
 // ============================================================================
 // RENDERING CONTROLS UI
 // ============================================================================
@@ -373,6 +425,11 @@ const controls = new RenderingControls({
     onModeChange: (mode) => { currentMode = mode; },
     onSizeChange: (size) => { currentPointSize = size; },
     onReconstructionChange: (value) => { useReconstruction = value; },
+    onOrthoChange: (value) => { orthoMode = value; },
+    onClassColorChange: (value) => {
+        showClassColors = value;
+        device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([value ? 1 : 0, 0, 0, 0]));
+    },
 });
 controls.mount(document.body);
 
@@ -583,9 +640,9 @@ async function generateImagesParallel() {
                     `Generated ${selectedPoses.length}/${CONFIG.imagesPerCombination} camera poses around target ${target} at radius ${radius}`
                 );
 
-                //for (const pos of selectedPoses) {
+                for (const pos of selectedPoses) {
                     allTasks.push({
-                        cameraPosition: selectedPoses[50],
+                        cameraPosition: pos,
                         target: target,
                         imageIndex: imageIndex++,
                         targetPosition: target,
@@ -595,7 +652,7 @@ async function generateImagesParallel() {
                         mode: currentMode,
                         pointSize: currentPointSize,
                     });
-                //}
+                }
 
                 // Za prvi in drugi radij (zelo oddaljeni) generiramo slike le iz centra
                 if (radius === CONFIG.hemisphereRadii[0] || radius === CONFIG.hemisphereRadii[1]) {
@@ -794,9 +851,22 @@ for (const cell of grid.cells) {
     });
     device.queue.writeBuffer(pointBuffer, 0, pointData);
 
+    // classification color buffer
+    const cellClassColors = new Uint32Array(maxNumberOfPointsPerBuffer);
+    cell.indices.forEach((j, slot) => { cellClassColors[slot] = classColors[j]; });
+    const classColorBuffer = device.createBuffer({
+        size: maxNumberOfPointsPerBuffer * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(classColorBuffer, 0, cellClassColors);
+
     const renderingBindGroup = device.createBindGroup({
         layout: renderingPipeline.getBindGroupLayout(0),
-        entries: [{ binding: 0, resource: { buffer: pointBuffer } }],
+        entries: [
+            { binding: 0, resource: { buffer: pointBuffer } },
+            { binding: 1, resource: { buffer: classColorBuffer } },
+            { binding: 2, resource: { buffer: classUniformBuffer } },
+        ],
     });
 
     // Določimo center vsake celice za kasnejše 
@@ -811,6 +881,7 @@ for (const cell of grid.cells) {
 
     pointclouds.push({
         pointBuffer,
+        classColorBuffer,
         renderingBindGroup,
         numberOfPoints: count,
         center: [cx, cy, cz], 
@@ -1128,87 +1199,6 @@ Batch size: 20 images (auto-restart)
 Press 'T' to start
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `);
-
-function buildOrthoButton() {
-    if (!document.getElementById('ortho-btn-styles')) {
-        const style = document.createElement('style');
-        style.id = 'ortho-btn-styles';
-        style.textContent = `
-        #ortho-toggle-btn {
-            position: fixed;
-            top: 16px;
-            right: 252px;
-            z-index: 1000;
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            padding: 9px 14px;
-            background: rgba(12,12,18,0.88);
-            backdrop-filter: blur(12px);
-            -webkit-backdrop-filter: blur(12px);
-            border: 1px solid rgba(255,255,255,0.1);
-            border-radius: 10px;
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 12px;
-            color: #aab;
-            cursor: pointer;
-            user-select: none;
-            transition: background 0.12s, border-color 0.12s, color 0.12s;
-            white-space: nowrap;
-        }
-        #ortho-toggle-btn:hover {
-            background: rgba(255,255,255,0.1);
-            color: #eef;
-        }
-        #ortho-toggle-btn.active {
-            background: rgba(99,179,237,0.18);
-            border-color: rgba(99,179,237,0.55);
-            color: #7ec8f4;
-            font-weight: 600;
-        }
-        #ortho-hint {
-            position: fixed;
-            bottom: 16px;
-            left: 50%;
-            transform: translateX(-50%);
-            z-index: 1000;
-            padding: 7px 16px;
-            background: rgba(12,12,18,0.82);
-            backdrop-filter: blur(8px);
-            border: 1px solid rgba(99,179,237,0.3);
-            border-radius: 8px;
-            font-family: system-ui, -apple-system, sans-serif;
-            font-size: 11px;
-            color: #7ec8f4;
-            pointer-events: none;
-            opacity: 0;
-            transition: opacity 0.25s;
-        }
-        #ortho-hint.visible { opacity: 1; }
-        `;
-        document.head.appendChild(style);
-    }
-
-    const btn = document.createElement('button');
-    btn.id = 'ortho-toggle-btn';
-    btn.innerHTML = `<span>⊡</span> Top-Down`;
-    btn.addEventListener('click', () => {
-        orthoMode = !orthoMode;
-        btn.classList.toggle('active', orthoMode);
-        btn.innerHTML = orthoMode
-            ? `<span>⊡</span> Top-Down <span style="font-size:10px;opacity:.7">[ON]</span>`
-            : `<span>⊡</span> Top-Down`;
-        hint.classList.toggle('visible', orthoMode);
-    });
-    document.body.appendChild(btn);
-
-    const hint = document.createElement('div');
-    hint.id = 'ortho-hint';
-    hint.textContent = 'W/S — move up/down  ·  Arrow keys — pan  ·  Scroll — zoom';
-    document.body.appendChild(hint);
-}
-
-buildOrthoButton();
 
 canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
