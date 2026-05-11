@@ -8,3 +8,5 @@ js/temp.js
 *.ply
 *.zip
 .DS_Store
+.idea
+segmentation
