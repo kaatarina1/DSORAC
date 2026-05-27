@@ -6,7 +6,7 @@ const MODE_META = {
 };
 
 export class RenderingControls {
-    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onClassColorChange }) {
+    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onClassColorChange, onMasksLoaded, onDownloadLas }) {
         this.modes            = modes;
         this.currentMode      = currentMode;
         this.currentPointSize = currentPointSize;
@@ -16,6 +16,8 @@ export class RenderingControls {
         this.onReconstructionChange = onReconstructionChange;
         this.onOrthoChange      = onOrthoChange;
         this.onClassColorChange = onClassColorChange;
+        this.onMasksLoaded      = onMasksLoaded;
+        this.onDownloadLas      = onDownloadLas;
         this.orthoMode          = false;
         this.classColorMode     = false;
         this._modeButtons     = {};
@@ -23,6 +25,8 @@ export class RenderingControls {
         this._orthoBtn        = null;
         this._orthoHint       = null;
         this._classBtn        = null;
+        this._segStatusEl     = null;
+        this._downloadBtn     = null;
     }
 
     mount(container) {
@@ -158,7 +162,53 @@ export class RenderingControls {
         this._orthoBtn = orthoBtn;
         panel.appendChild(orthoBtn);
 
+        const divSeg = document.createElement("div");
+        divSeg.className = "rc-divider";
+        panel.appendChild(divSeg);
+
+        const segLabel = document.createElement("div");
+        segLabel.style.cssText = "font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#667;font-weight:700;margin-bottom:8px;";
+        segLabel.textContent = "Segmentation";
+        panel.appendChild(segLabel);
+
+        const fileInput = document.createElement("input");
+        fileInput.type = "file"; fileInput.accept = ".zip"; fileInput.style.display = "none";
+        fileInput.addEventListener("change", () => {
+            if (fileInput.files[0] && this.onMasksLoaded) this.onMasksLoaded(fileInput.files[0]);
+        });
+        panel.appendChild(fileInput);
+
+        const loadBtn = document.createElement("button");
+        loadBtn.className = "rc-ortho-btn";
+        loadBtn.innerHTML = `<span>📂</span> Upload masks (ZIP)`;
+        loadBtn.addEventListener("click", () => fileInput.click());
+        panel.appendChild(loadBtn);
+
+        this._segStatusEl = document.createElement("div");
+        this._segStatusEl.style.cssText = "font-size:11px;color:#667;margin-top:8px;min-height:16px;";
+        panel.appendChild(this._segStatusEl);
+
+        this._downloadBtn = document.createElement("button");
+        this._downloadBtn.className = "rc-ortho-btn";
+        this._downloadBtn.innerHTML = `<span>⬇</span> Download LAS`;
+        this._downloadBtn.style.display = "none";
+        this._downloadBtn.addEventListener("click", () => { if (this.onDownloadLas) this.onDownloadLas(); });
+        panel.appendChild(this._downloadBtn);
+
         return panel;
+    }
+
+    setSegmentationStatus(text, done = false) {
+        if (this._segStatusEl) this._segStatusEl.textContent = text;
+        if (this._downloadBtn) this._downloadBtn.style.display = done ? "" : "none";
+    }
+
+    enableClassification() {
+        if (!this._classBtn) return;
+        this.classColorMode = true;
+        this._classBtn.classList.add('active');
+        this._classBtn.innerHTML = `<span>◈</span> Classification <span class="rc-ortho-tag">[ON]</span>`;
+        if (this.onClassColorChange) this.onClassColorChange(true);
     }
 
     _selectMode(mode) {

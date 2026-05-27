@@ -1,8 +1,12 @@
 struct Point {
-    position: vec3f,
-    color: u32,
-    normal: vec3f,
-    depth: f32
+    position:   vec3f,
+    color:      u32,
+    normal:     vec3f,
+    depth:      f32,
+    classColor: u32,
+    _pad0:      u32,
+    _pad1:      u32,
+    _pad2:      u32,
 }
 
 struct SceneParams {
@@ -15,6 +19,7 @@ struct SceneParams {
 }
 
 @group(0) @binding(0) var<storage, read> points: array<Point>;
+@group(0) @binding(2) var<uniform> useClassColors: u32;
 @group(1) @binding(0) var<uniform> matrix:     mat4x4f;
 @group(1) @binding(1) var<uniform> viewMatrix: mat4x4f;
 @group(2) @binding(0) var<uniform> depthRange: vec2f;

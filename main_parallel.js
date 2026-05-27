@@ -8,6 +8,7 @@ import JSZip from "jszip";
 import saveAs from "file-saver";
 
 import WorkerScript from './imageGenerationWorker.js?worker';
+import { SegmentationPipeline } from "./js/SegmentationPipeline.js";
 
 const CONFIG = {
     canvasWidth: 1024,
@@ -16,11 +17,12 @@ const CONFIG = {
     batchSize: 20,
     reconstructionColorOrder: "rgb",
     simpleRenderingColorOrder: "bgr",
-    hemisphereRadii: [/*325, 200, 140, 110*/, 1],
-    imagesPerCombination: 110,
+    hemisphereRadii: [/*325, 200, 140, 110,*/ 3.5/*150*/],
+    imagesPerCombination: 50, // 110
     lasFile: "./data/pc/room_normals.las",
     targetPositions: [
-        [0, 0, 0],
+        //[0, 0, 0],
+        [0, 0.8, 0],
         // [-40, 15, -20],
         // [40, 15, -20],
         // [-40, 15, 10],
@@ -246,6 +248,10 @@ const device = await adapter?.requestDevice({
     requiredFeatures: hasBGRA8unormStorage 
         ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable", "timestamp-query"] 
         : ["float32-filterable", "float32-blendable", "timestamp-query"],
+    requiredLimits: {
+        maxBufferSize: adapter.limits.maxBufferSize,
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+    },
 });
 
 const canvas = document.querySelector("canvas");
@@ -283,19 +289,53 @@ function hslToRgb(h, s, l) {
     return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
+// RGBA zapakiran kot 0xAABBGGRR
 const classPalette = new Uint32Array(256);
-classPalette[0] = 0xFF808080; // class 0 (unclassified) = grey
-const golden = 0.6180339887;
-for (let ci = 1; ci < 256; ci++) {
-    const [r, g, b] = hslToRgb((ci * golden) % 1.0, 0.75, 0.55);
-    classPalette[ci] = (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
+
+// fallback (če za razred ni definirana barva)
+// je magenta (enostavno zaznamo odstopanje)
+for (let i = 0; i < 256; i++) {
+    classPalette[i] = 0xFFFF00FF;
+}
+
+// Barve razredov, za vizualizacijo klasifikacije
+const predefined = {
+    0:  [180, 180, 180], // Unclassified - gray
+    1:  [255, 255, 80], // wall - white
+    2:  [210, 105, 30], // floor - white
+    4:  [210, 10, 30], // door - white
+    5:  [150, 100, 30], // window - white
+    7:  [165, 42, 42],   // Ground - brown
+    8:  [0, 255, 0],     // Low vegetation - green
+    14: [34, 139, 34],   // Medium vegetation - forest green
+    20: [0, 100, 0],     // High vegetation - dark green
+    57: [255, 0, 0],     // Building - red
+    58: [0, 0, 255],     // Low point/noise - blue
+    59: [150, 0, 255],   // Key-point - yellow
+    60: [255, 165, 0],   // Water - orange
+    61: [0, 255, 255],   // Rail - cyan
+    61: [255, 0, 255],   // Road surface - magenta
+    62: [128, 0, 128],   // Overlap - purple
+    63: [255, 105, 180], // Wire guard - pink
+    6:  [0, 191, 255],   // Wire conductor - sky blue
+    12: [250, 105, 80],  // Transmission tower - chocolate
+    11: [50, 205, 50],   // Wire-structure connector
+    17: [70, 130, 180],  // Bridge deck
+    65: [255, 69, 0],    // High noise
+};
+
+// Zapakiramo v Uint32
+for (const [cls, rgb] of Object.entries(predefined)) {
+    const [r, g, b] = rgb;
+    classPalette[cls] =
+        (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
 }
 const classColors = new Uint32Array(positions.length / 3);
 for (let i = 0; i < classColors.length; i++) {
     classColors[i] = classPalette[classifications[i]];
 }
 
-// Log class -> color mapping (only classes that actually appear in the data)
+// Log class -> color mapping (samo razredi, ki se dejansko pojavijo v podatkih)
 const presentClasses = new Map();
 for (const cls of classifications) {
     if (!presentClasses.has(cls)) {
@@ -374,7 +414,7 @@ const quadPipelines = {
 
 // Render mode state
 let currentMode = "POINTS";
-let currentPointSize = 0.2;
+let currentPointSize = 0.02; // 0.2
 
 // SceneParams buffer
 const sceneParamsBuffer = device.createBuffer({
@@ -390,8 +430,6 @@ function writeSceneParams(tp, camPos, pointSize) {
     device.queue.writeBuffer(sceneParamsBuffer, 0, data);
 }
 
-// Barva ob upodabljanju razredov po segmentaciji
-let showClassColors = false;
 const classUniformBuffer = device.createBuffer({
     size: 16,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -417,6 +455,7 @@ let orthoZoom  = Math.max(
 ) * 1.15;
 // ─────────────────────────────────────────────────────────────────────────────
 
+let segmentation = null;
 const controls = new RenderingControls({
     modes: ["POINTS", "DISKS", "BILLBOARDS", "GAUSSIANS"],
     currentMode,
@@ -427,9 +466,10 @@ const controls = new RenderingControls({
     onReconstructionChange: (value) => { useReconstruction = value; },
     onOrthoChange: (value) => { orthoMode = value; },
     onClassColorChange: (value) => {
-        showClassColors = value;
         device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([value ? 1 : 0, 0, 0, 0]));
     },
+    onMasksLoaded: (zipFile) => segmentation.processZip(zipFile),
+    onDownloadLas: () => downloadLas(),
 });
 controls.mount(document.body);
 
@@ -473,11 +513,11 @@ const matricesBindGroup = device.createBindGroup({
 });
 
 // Camera controls
-let cameraPosition = [0, 20, 0];
+let cameraPosition = [0, 2, 0]; // 0, 20, 0
 let cameraTarget = [0, 0, 0];
 let yaw = 0;
 let pitch = Math.PI / 2 - 0.1;  // Start looking down from above
-let distance = 20;
+let distance = 8; // 20
 
 const pointerController = new PointerController(canvas);
 
@@ -810,8 +850,13 @@ async function exportResults(capturedData) {
     console.log("✓ Export saved");
 }
 
+async function downloadLas() {
+    // TODO: Step 6 — read pointBuffer via mapAsync, write LAS binary
+    console.log('downloadLas: not yet implemented.');
+}
+
 // Interactive preview render loop
-const pointByteSize = 32;
+const pointByteSize = 48;
 const maxNumberOfPointsPerBuffer = 1024 * 1024;
 const numberOfAllPoints = positions.length / 3;
 const pointclouds = [];
@@ -826,8 +871,10 @@ const pointclouds = [];
 const grid = new AdaptiveGrid(positions, maxNumberOfPointsPerBuffer);
 console.log(`Adaptive grid: ${grid.cells.length} cells`);
 
+let globalPointOffset = 0;
 for (const cell of grid.cells) {
     const count = cell.indices.length;
+    const cellGlobalStart = globalPointOffset;
 
     const pointData = new ArrayBuffer(maxNumberOfPointsPerBuffer * pointByteSize);
     const pointDataView = new DataView(pointData);
@@ -835,41 +882,33 @@ for (const cell of grid.cells) {
     cell.indices.forEach((j, slot) => {
         const posIndex = j * 3;
         const pointOffset = slot * pointByteSize;
-        pointDataView.setFloat32(pointOffset, positions[posIndex], true);
-        pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
-        pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
-        pointDataView.setUint32( pointOffset + 12, colors[j], true);
-        pointDataView.setFloat32(pointOffset + 16, normals[posIndex], true);
-        pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1], true);
-        pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2], true);
-        pointDataView.setFloat32(pointOffset + 28, 0.0, true);
+        pointDataView.setFloat32(pointOffset,      positions[posIndex],     true);
+        pointDataView.setFloat32(pointOffset +  4, positions[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset +  8, positions[posIndex + 2], true);
+        pointDataView.setUint32( pointOffset + 12, colors[j],               true);
+        pointDataView.setFloat32(pointOffset + 16, normals[posIndex],       true);
+        pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1],   true);
+        pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2],   true);
+        pointDataView.setFloat32(pointOffset + 28, 0.0,                     true); // depth (sort key)
+        pointDataView.setUint32( pointOffset + 32, classColors[j],          true); // classColor
+        pointDataView.setUint32( pointOffset + 36, cellGlobalStart + slot,  true); // _pad0 = stable global index
     });
 
     const pointBuffer = device.createBuffer({
         size: maxNumberOfPointsPerBuffer * pointByteSize,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
     device.queue.writeBuffer(pointBuffer, 0, pointData);
-
-    // classification color buffer
-    const cellClassColors = new Uint32Array(maxNumberOfPointsPerBuffer);
-    cell.indices.forEach((j, slot) => { cellClassColors[slot] = classColors[j]; });
-    const classColorBuffer = device.createBuffer({
-        size: maxNumberOfPointsPerBuffer * 4,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(classColorBuffer, 0, cellClassColors);
 
     const renderingBindGroup = device.createBindGroup({
         layout: renderingPipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: pointBuffer } },
-            { binding: 1, resource: { buffer: classColorBuffer } },
-            { binding: 2, resource: { buffer: classUniformBuffer } },
+            { binding: 1, resource: { buffer: classUniformBuffer } },
         ],
     });
 
-    // Določimo center vsake celice za kasnejše 
+    // Določimo center vsake celice za kasnejše
     // sortiranje celic glede na globino (povprečje pozicij točk v celici)
     let cx = 0, cy = 0, cz = 0;
     for (const pi of cell.indices) {
@@ -881,12 +920,16 @@ for (const cell of grid.cells) {
 
     pointclouds.push({
         pointBuffer,
-        classColorBuffer,
         renderingBindGroup,
         numberOfPoints: count,
-        center: [cx, cy, cz], 
+        center: [cx, cy, cz],
+        globalStart: cellGlobalStart,
     });
+
+    globalPointOffset += count;
 }
+
+segmentation = new SegmentationPipeline({ device, numberOfAllPoints, pointclouds, classPalette, controls });
 
 let depthTexture = device.createTexture({
     size: [canvas.width, canvas.height],

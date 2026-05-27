@@ -1,13 +1,16 @@
 struct Point {
-    position: vec3f,
-    color: u32,
-    normal: vec3f,
-    depth: f32
+    position:   vec3f,
+    color:      u32,
+    normal:     vec3f,
+    depth:      f32,
+    classColor: u32,
+    _pad0:      u32,
+    _pad1:      u32,
+    _pad2:      u32,
 }
 
 @group(0) @binding(0) var<storage, read> points: array<Point>;
-@group(0) @binding(1) var<storage, read> classColors: array<u32>;
-@group(0) @binding(2) var<uniform> useClassColors: u32;
+@group(0) @binding(1) var<uniform> useClassColors: u32;
 @group(1) @binding(0) var<uniform> matrix: mat4x4f;
 @group(1) @binding(1) var<uniform> viewMatrix: mat4x4f;
 @group(2) @binding(0) var<uniform> depthRange: vec2f;
@@ -38,7 +41,7 @@ fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
 
     let isTarget = distance((*point).position, targetPosition.xyz) < 0.02;
     output.isTarget = select(0.0, 1.0, isTarget);
-    output.color = select(unpack4x8unorm((*point).color), unpack4x8unorm(classColors[index]), useClassColors != 0u);
+    output.color = select(unpack4x8unorm((*point).color), unpack4x8unorm((*point).classColor), useClassColors != 0u);
     return output;
 }
 

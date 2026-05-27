@@ -1,8 +1,12 @@
 struct Point {
-    position: vec3f,
-    color: u32,
-    normal: vec3f,
-    depth: f32,
+    position:   vec3f,
+    color:      u32,
+    normal:     vec3f,
+    depth:      f32,
+    classColor: u32,
+    _pad0:      u32,
+    _pad1:      u32,
+    _pad2:      u32,
 }
 
 

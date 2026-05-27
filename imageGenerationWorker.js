@@ -16,10 +16,8 @@ let globalSortPipeline = null;
 let quadPipelines = {};
 let pointclouds = [];
 let canvas = null;
-// Dummy buffers za rendering.wgsl group-0 bindingi 1 & 2 (classColors / useClassColors).
-// Worker zajema le RGB slike scene, se pravi nikoli ne upodablja scene z barvami razredov
-let dummyClassColorsBuffer = null;
-let useClassColorsBuffer   = null;
+// useClassColors uniform buffer — always 0 in the worker (captures original RGB only)
+let useClassColorsBuffer = null;
 let format = null;
 let deviceLost = false;
 let deviceLostPromise = null;
@@ -224,11 +222,6 @@ async function initializeWorker(config) {
             console.log("   Sorting will be skipped if requested");
         }
 
-        // Dummy bufferji za rendering.wgsl group-0 bindingi 1 & 2.
-        dummyClassColorsBuffer = device.createBuffer({
-            size: 4,
-            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-        });
         useClassColorsBuffer = device.createBuffer({
             size: 4,
             usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -284,7 +277,7 @@ async function initializeWorker(config) {
 
 async function createPointClouds(positions, colors, normals) {
     pointclouds = [];
-    const pointByteSize = 32;
+    const pointByteSize = 48;
     const maxPointsPerBuffer = 1024 * 1024;
     numberOfAllPoints = positions.length / 3;
 
@@ -308,13 +301,13 @@ async function createPointClouds(positions, colors, normals) {
             pointDataView.setFloat32(pointOffset +  4, positions[posIndex + 1], true);
             pointDataView.setFloat32(pointOffset +  8, positions[posIndex + 2], true);
             pointDataView.setUint32( pointOffset + 12, colors[j],               true);
-            // normals (needed by DISKS / BILLBOARDS / GAUSSIANS shaders)
+            // normals (potrebujemo jih za DISKS / BILLBOARDS / GAUSSIANS shaders)
             if (normals) {
                 pointDataView.setFloat32(pointOffset + 16, normals[posIndex],     true);
                 pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1], true);
                 pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2], true);
             }
-            pointDataView.setFloat32(pointOffset + 28, 0.0, true); // padding
+            pointDataView.setFloat32(pointOffset + 28, 0.0, true); // depth (sort key)
 
             sumX += positions[posIndex];
             sumY += positions[posIndex + 1];
@@ -335,8 +328,7 @@ async function createPointClouds(positions, colors, normals) {
             layout: renderingPipeline.getBindGroupLayout(0),
             entries: [
                 { binding: 0, resource: { buffer: pointBuffer } },
-                { binding: 1, resource: { buffer: dummyClassColorsBuffer } },
-                { binding: 2, resource: { buffer: useClassColorsBuffer } },
+                { binding: 1, resource: { buffer: useClassColorsBuffer } },
             ],
         });
 
@@ -823,8 +815,7 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
                 layout: renderingPipeline.getBindGroupLayout(0),
                 entries: [
                     { binding: 0, resource: { buffer: pc.pointBuffer } },
-                    { binding: 1, resource: { buffer: dummyClassColorsBuffer } },
-                    { binding: 2, resource: { buffer: useClassColorsBuffer } },
+                    { binding: 1, resource: { buffer: useClassColorsBuffer } },
                 ],
             }));
             renderPass.draw(pc.numberOfPoints);
