@@ -345,8 +345,8 @@ export class SegmentationPipeline {
 
             // Zgradi MVP za COLMAP quaternione in translacije
             const { qw, qx, qy, qz, tx, ty, tz } = img;
-            const V   = this.#colmapQuatToViewMatrix(qw, qx, qy, qz, tx, ty, tz);
-            const P   = this.#colmapIntrinsicsToProjection(cam.fx, cam.fy, cam.cx, cam.cy, cam.width, cam.height, NEAR, FAR);
+            const V   = this.colmapQuatToViewMatrix(qw, qx, qy, qz, tx, ty, tz);
+            const P   = this.colmapIntrinsicsToProjection(cam.fx, cam.fy, cam.cx, cam.cy, cam.width, cam.height, NEAR, FAR);
             const MVP = mat4.multiply(P, V);
 
             // mat4 MVP (16 floats) + {imgW, imgH, radius, pad} (4 floats) = 20 floats = 80 bytes
