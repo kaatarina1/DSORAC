@@ -298,37 +298,175 @@ for (let i = 0; i < 256; i++) {
     classPalette[i] = 0xFFFF00FF;
 }
 
-// Barve razredov, za vizualizacijo klasifikacije
-const predefined = {
-    0:  [180, 180, 180], // Unclassified - gray
-    1:  [255, 255, 80], // wall - white
-    2:  [210, 105, 30], // floor - white
-    4:  [210, 10, 30], // door - white
-    5:  [150, 100, 30], // window - white
-    7:  [165, 42, 42],   // Ground - brown
-    8:  [0, 255, 0],     // Low vegetation - green
-    14: [34, 139, 34],   // Medium vegetation - forest green
-    20: [0, 100, 0],     // High vegetation - dark green
-    57: [255, 0, 0],     // Building - red
-    58: [0, 0, 255],     // Low point/noise - blue
-    59: [150, 0, 255],   // Key-point - yellow
-    60: [255, 165, 0],   // Water - orange
-    61: [0, 255, 255],   // Rail - cyan
-    61: [255, 0, 255],   // Road surface - magenta
-    62: [128, 0, 128],   // Overlap - purple
-    63: [255, 105, 180], // Wire guard - pink
-    6:  [0, 191, 255],   // Wire conductor - sky blue
-    12: [250, 105, 80],  // Transmission tower - chocolate
-    11: [50, 205, 50],   // Wire-structure connector
-    17: [70, 130, 180],  // Bridge deck
-    65: [255, 69, 0],    // High noise
-};
+// Barve razredov za vizualizacijo klasifikacije.
+// Razredi 0–200 so generirani z zlatoreznim korakom po barvnem krogu:
+// φ ≈ 0.618 zagotavlja, da sta zaporedni barvi vedno ~222° narazen,
+// torej sosednji indeksi nikoli nimajo podobnih barv.
+// Zraven se ciclično menja nasičenost/svetlost, kar dodatno razlikuje barve z enakim odtenkom.
+const GOLDEN_RATIO = 0.618033988749895;
+const SL_VARIANTS = [
+    [0.88, 0.52],  // vivid mid
+    [0.95, 0.36],  // deep / saturated dark
+    [0.72, 0.66],  // bright light
+];
+for (let i = 0; i < 201; i++) {
+    const h = (i * GOLDEN_RATIO) % 1.0;
+    const [s, l] = SL_VARIANTS[i % SL_VARIANTS.length];
+    const [r, g, b] = hslToRgb(h, s, l);
+    classPalette[i] = (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
+}
 
-// Zapakiramo v Uint32
-for (const [cls, rgb] of Object.entries(predefined)) {
+const SEMANTIC_OVERRIDES = {
+    // Unclassified / scene labels 
+    0:   [160, 160, 160],  // unclassified — neutral gray
+    1:   [235, 218, 198],  // leaving room — warm ivory (scene label)
+
+    // INDOOR: living room scene 
+    2:   [195, 165, 120],  // floor — warm tan
+    6:   [225, 105,  20],  // table — vivid orange
+    7:   [  0, 155, 172],  // chair — strong teal
+    8:   [ 48,  95, 215],  // sofa — cobalt blue
+    11:  [245, 215,  45],  // lamp — bright yellow
+    13:  [ 90,  55,  18],  // cabinet — dark brown
+    16:  [ 38, 175,  58],  // plant — green
+    20:  [200,  20, 142],  // carpet — deep magenta
+    73:  [160, 155, 145],  // pillar — warm gray
+    107: [ 58, 102, 205],  // structure — blue
+    108: [  0, 112, 122],  // solar panels — dark teal
+    109: [ 48,  18,  80],  // shadows — dark purple
+    159: [175, 232, 242],  // glass — light cyan
+    164: [ 88,  98, 128],  // coffee table — slate-blue (contrast with wood table)
+    165: [235,  72,  72],  // rug — coral red (contrast with magenta carpet)
+    166: [ 48,  50,  55],  // tv stand — near black
+    167: [105,  28, 172],  // armchair — indigo-purple (contrast with teal/blue sofa/chair)
+    168: [ 80, 125, 132],  // furniture generic — muted slate-teal
+    169: [255,  95, 178],  // painting — hot pink
+    172: [152,  20,  20],  // fireplace — dark red
+    173: [215, 152, 175],  // living room — soft rose (scene label)
+    174: [232, 148,  52],  // doorway — amber
+    175: [212, 192, 155],  // box — beige
+
+    // STREET / URBAN: road / sidewalk / building / car / tree / grass / sky 
+    40:  [228,  32,  32],  // car — vivid red
+    41:  [148,  15,  15],  // truck — dark crimson
+    47:  [ 25, 140,  35],  // tree — deep green
+    48:  [148, 228,  28],  // grass — bright yellow-green
+    49:  [190, 195, 208],  // sidewalk — light cool gray
+    50:  [ 55,  60,  68],  // road — dark charcoal
+    51:  [215, 132,  48],  // building — warm orange
+    52:  [140,  82,  25],  // fence — brown
+    59:  [165,  70,  18],  // roof — dark red-brown
+    62:  [  0, 202, 235],  // window — cyan
+    63:  [132,  18, 185],  // door — purple
+    64:  [ 48,  58,  80],  // street — dark slate (slightly bluer than road)
+    68:  [205, 158,  55],  // house — amber
+    74:  [222, 205,  48],  // house exterior — golden yellow
+    75:  [ 98, 115, 150],  // city — slate blue
+    76:  [ 62, 172,  75],  // village — warm green
+    77:  [205, 155,  65],  // town — amber
+    78:  [ 88, 168, 255],  // sky — azure blue
+    81:  [152,  95,  42],  // cabin — brown
+    82:  [182, 132,  58],  // hut — orange-brown
+    83:  [238,  95,  28],  // vehicle — orange-red
+    84:  [255, 132,   0],  // construction site — safety orange
+    87:  [182, 162, 110],  // driveway — tan
+    95:  [ 95, 108, 142],  // parking lot — blue-gray
+    101: [ 65, 108, 202],  // parking — blue
+    111: [255,  45, 148],  // circles — bright pink (special marking)
+    112: [128, 130, 135],  // concrete wall — medium gray
+    127: [235,  90,  80],  // car door — coral-pink
+    128: [ 32,  32,  38],  // car tire — near black
+    135: [252, 170,   0],  // sign — vivid orange-yellow
+    136: [158, 152, 142],  // stone pillar — warm gray
+    137: [205, 205, 215],  // light poles — silver
+    144: [255, 240, 138],  // streetlights — soft gold
+    177: [128, 162, 202],  // train car — silver-blue
+    180: [ 85, 110, 148],  // street scene — muted blue
+    181: [202,  28, 162],  // tower — magenta
+    182: [242, 108, 162],  // bell tower — pink
+    184: [118, 138,  38],  // shed — olive
+    185: [222,  72,  52],  // van — coral-red
+
+    // NATURE: tree / grass / water / rocks / sky / flowers
+    60:  [105, 138,  35],  // bush — olive-green (darker/yellower than grass)
+    61:  [ 18, 100, 202],  // water — deep blue
+    67:  [178, 192, 212],  // space station — silver
+    69:  [ 75,  92, 112],  // battleship — dark steel
+    70:  [ 15, 158,  38],  // lush — rich green
+    71:  [115, 168,  38],  // grassy — yellow-olive
+    72:  [195, 195, 202],  // bleacher — light gray
+    80:  [ 15,  95,  18],  // forest — dark forest green
+    86:  [155, 108,  55],  // dirt — earthy brown
+    90:  [195, 162, 112],  // path — sandy tan
+    91:  [142, 125,  92],  // rocks — warm gray
+    92:  [200, 198,  45],  // field — golden-yellow
+    93:  [212, 218, 224],  // fog — pale gray
+    94:  [  0, 198, 205],  // pool — turquoise
+    97:  [188, 218,  28],  // lawn — yellow-green (distinguishable from grass [148,228,28])
+    104: [ 55, 155,  55],  // foliage — muted green
+    105: [ 85, 135,  32],  // shrubs — olive
+    110: [152, 232,   0],  // grassy area — vivid lime
+    130: [255,  85, 155],  // flowers — hot pink
+    133: [105, 118, 142],  // stone — blue-gray
+    134: [188, 118, 245],  // flowerbed — lavender (contrast with hot-pink flowers)
+    138: [ 78, 215,  45],  // leaves — bright green
+    139: [162, 108,  40],  // wood — dark amber
+    143: [ 75,  88, 112],  // lot — dark slate
+    150: [110, 182,  92],  // grassy_field — sage green
+    155: [115, 192,  98],  // garden — pastel green
+    171: [ 12, 110,  25],  // pine — deep forest
+    178: [255, 188, 195],  // cherry tree — light pink
+
+    // SKY / ATMOSPHERE
+    152: [225, 235, 248],  // clouds — pale blue-white
+    162: [ 18,  20,  36],  // night-time — very dark
+    163: [ 12,  12,  18],  // darkness — near black
+    176: [  8,  12,  62],  // night sky — very dark blue
+    179: [102, 128, 165],  // rainy — steel blue-gray
+
+    //  GROUND / PAVEMENT (all co-occur on streets)
+    57:  [112, 115, 125],  // pavement — medium gray
+    58:  [255, 165,  45],  // crosswalk — vivid orange
+    100: [178, 180, 188],  // concrete — light gray
+    102: [ 42,  45,  50],  // asphalt — near black
+    103: [ 95, 165, 242],  // parking space — light blue
+    113: [195, 172, 130],  // pathway — sand
+    118: [ 28,  30,  34],  // asphalt pavement — very dark (darker than asphalt)
+    121: [152, 162, 185],  // concrete pavement — gray-blue
+    122: [162, 152, 138],  // stone pavement — warm gray
+    151: [162, 178, 158],  // concrete_path — gray-green
+    170: [158, 175, 148],  // concrete path — gray-green slightly different hue
+
+    // PAVEMENT MARKINGS (street scenes — vivid unique hues per type) 
+    123: [148, 232,   0],  // pavement markings — vivid lime
+    124: [  0, 232, 222],  // road markings — vivid cyan
+    125: [255,  45, 180],  // sidewalk markings — vivid pink
+    126: [ 45, 100, 255],  // parking lot markings — vivid blue
+    145: [168,   0, 255],  // street markings — vivid purple
+    153: [ 95, 130, 172],  // metal sign — steel blue
+    154: [252, 200,   0],  // signage — vivid amber-yellow
+    160: [255, 222,   0],  // markings — bright yellow
+    161: [255, 128,   0],  // lines — bright orange
+
+    // BRICK BUILDINGS (all appear together — unrelated hues for each) 
+    114: [205, 125,  55],  // brick_house — orange
+    115: [ 28,  48, 185],  // brick_roof — dark blue
+    116: [  0, 198, 222],  // brick_window — cyan
+    117: [ 95, 198,  25],  // brick building — lime green
+    119: [248,  45, 148],  // brick wall surface — hot pink
+    120: [212,  15, 192],  // brick wall — magenta
+    140: [140,  35, 192],  // brick_pavement — purple
+    141: [ 15, 130,  45],  // brick_fence — dark green
+    142: [212, 148,  52],  // brick-paved road — warm amber-brown
+    147: [215, 178,  38],  // brick_path — amber
+    148: [ 95, 172, 242],  // brick_garage_window — light blue
+    149: [200, 110,  45],  // brick house — terracotta
+    156: [215,  35,  35],  // brick structure — vivid red
+    157: [  0, 172, 162],  // brick facade — teal
+};
+for (const [cls, rgb] of Object.entries(SEMANTIC_OVERRIDES)) {
     const [r, g, b] = rgb;
-    classPalette[cls] =
-        (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
+    classPalette[Number(cls)] = (r | (g << 8) | (b << 16) | (0xFF << 24)) >>> 0;
 }
 const classColors = new Uint32Array(positions.length / 3);
 for (let i = 0; i < classColors.length; i++) {
@@ -465,10 +603,10 @@ const controls = new RenderingControls({
     onSizeChange: (size) => { currentPointSize = size; },
     onReconstructionChange: (value) => { useReconstruction = value; },
     onOrthoChange: (value) => { orthoMode = value; },
-    onClassColorChange: (value) => {
-        device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([value ? 1 : 0, 0, 0, 0]));
+    onColorModeChange: (mode) => {
+        device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([mode, 0, 0, 0]));
     },
-    onMasksLoaded: (zipFile) => segmentation.processZip(zipFile),
+    onMasksLoaded: (zipFile, votingMode) => segmentation.processZip(zipFile, votingMode),
     onDownloadLas: () => downloadLas(),
 });
 controls.mount(document.body);
@@ -851,8 +989,86 @@ async function exportResults(capturedData) {
 }
 
 async function downloadLas() {
-    // TODO: Step 6 — read pointBuffer via mapAsync, write LAS binary
-    console.log('downloadLas: not yet implemented.');
+    if (!segmentation?.segClassByGlobalIndex) {
+        console.warn('No segmentation result yet — run segmentation first.');
+        return;
+    }
+
+    // remapping to the CLSS classification
+    const SEG_TO_LAS = new Map([
+    // Terrain (2)
+    ...[
+        48, 49, 50, 58, 71, 97, 110, 150, 92, 155,
+        86, 91, 133, 90, 113, 84, 87,
+        57, 118, 121, 122, 75, 76
+    ].map(c => [c, 2]),
+
+    // Low Vegetation (3)
+    ...[
+        60, 105, 104, 70, 130, 134, 16
+    ].map(c => [c, 3]),
+
+    // Middle Vegetation (4)
+    [47, 4],
+
+    // High Vegetation (5)
+    ...[
+        171, 80
+    ].map(c => [c, 5]),
+
+    // Building (6)
+    ...[
+        1, 63, 62, 59, 73,
+        112, 119, 120, 136, 174,
+        68, 74, 81, 82, 184,
+        51, 107, 117, 149, 156,
+        157, 187, 181, 182
+    ].map(c => [c, 6]),
+
+    // Water (9)
+    ...[
+        61, 94
+    ].map(c => [c, 9]),
+
+    // Moving Object / Noise (18)
+    ...[
+        40, 41, 83, 185
+    ].map(c => [c, 18]),
+
+    // Unclassified (1)
+    [0, 1]
+]);
+
+    console.log('Fetching original LAS file...');
+    const response = await fetch(CONFIG.lasFile);
+    const arrayBuffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+    const view  = new DataView(arrayBuffer);
+
+    const pointFormat  = bytes[104] & 0b1111;
+    const recordLength = view.getUint16(105, true);
+    const dataOffset   = view.getUint32(96,  true);
+    // Formats 0-5: classification stored in user_data at byte 17
+    // Formats 6-10: full uint8 classification at byte 16
+    const classOff     = pointFormat <= 5 ? 17 : 16;
+
+    const seg = segmentation.segClassByGlobalIndex;
+    for (let j = 0; j < numberOfAllPoints; j++) {
+        const segClass = seg[jToGlobalIndex[j]];
+        bytes[dataOffset + j * recordLength + classOff] = SEG_TO_LAS.get(segClass) ?? 1;
+    }
+
+    const filename = CONFIG.lasFile.split('/').pop().replace(/\.las$/i, '_classified.las');
+    const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    console.log(`Downloaded ${filename} (${numberOfAllPoints} points).`);
 }
 
 // Interactive preview render loop
@@ -890,8 +1106,9 @@ for (const cell of grid.cells) {
         pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1],   true);
         pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2],   true);
         pointDataView.setFloat32(pointOffset + 28, 0.0,                     true); // depth (sort key)
-        pointDataView.setUint32( pointOffset + 32, classColors[j],          true); // classColor
+        pointDataView.setUint32( pointOffset + 32, classColors[j],          true); // classColor (overwritten by segmentation)
         pointDataView.setUint32( pointOffset + 36, cellGlobalStart + slot,  true); // _pad0 = stable global index
+        pointDataView.setUint32( pointOffset + 40, classColors[j],          true); // lasClassColor (permanent LAS ASPRS classes)
     });
 
     const pointBuffer = device.createBuffer({
@@ -929,7 +1146,17 @@ for (const cell of grid.cells) {
     globalPointOffset += count;
 }
 
-segmentation = new SegmentationPipeline({ device, numberOfAllPoints, pointclouds, classPalette, controls });
+// Maps original LAS point index j to GPU global index (needed for LAS export)
+const jToGlobalIndex = new Uint32Array(numberOfAllPoints);
+{
+    let off = 0;
+    for (const cell of grid.cells) {
+        cell.indices.forEach((j, slot) => { jToGlobalIndex[j] = off + slot; });
+        off += cell.indices.length;
+    }
+}
+
+segmentation = new SegmentationPipeline({ device, numberOfAllPoints, pointclouds, classPalette, controls, bbMin, bbMax });
 
 let depthTexture = device.createTexture({
     size: [canvas.width, canvas.height],
@@ -1126,7 +1353,7 @@ function frame() {
         size: 8,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([0, 1e6]));
+    device.queue.writeBuffer(depthRangeBuffer, 0, new Float32Array([-10, 1e10]));
 
     // Target position — vec4f padded for alignment
     const targetPosBuf = device.createBuffer({
@@ -1219,7 +1446,10 @@ function frame() {
             const pc = batch.pc;
             renderPass.setBindGroup(0, device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(0),
-                entries: [{ binding: 0, resource: { buffer: pc.pointBuffer } }],
+                entries: [
+                    { binding: 0, resource: { buffer: pc.pointBuffer } },
+                    { binding: 1, resource: { buffer: classUniformBuffer } },
+                ],
             }));
             renderPass.draw(pc.numberOfPoints * 6);
         }

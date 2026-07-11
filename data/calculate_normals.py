@@ -182,6 +182,7 @@ out.blue  = filtered_colors[:, 2]
 out.nx    = normals[:, 0].astype(np.float32)
 out.ny    = normals[:, 1].astype(np.float32)
 out.nz    = normals[:, 2].astype(np.float32)
+out.classification = las.classification
 
 out.write(name + "_normals.las")
 print("Saved → " + name + "_normals.las")

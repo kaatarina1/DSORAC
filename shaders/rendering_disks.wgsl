@@ -1,12 +1,12 @@
 struct Point {
-    position:   vec3f,
-    color:      u32,
-    normal:     vec3f,
-    depth:      f32,
-    classColor: u32,
-    _pad0:      u32,
-    _pad1:      u32,
-    _pad2:      u32,
+    position:      vec3f,
+    color:         u32,
+    normal:        vec3f,
+    depth:         f32,
+    classColor:    u32,
+    _pad0:         u32,
+    lasClassColor: u32,
+    _pad2:         u32,
 }
 
 struct SceneParams {
@@ -19,7 +19,7 @@ struct SceneParams {
 }
 
 @group(0) @binding(0) var<storage, read> points: array<Point>;
-@group(0) @binding(2) var<uniform> useClassColors: u32;
+@group(0) @binding(1) var<uniform> useClassColors: u32;
 @group(1) @binding(0) var<uniform> matrix:     mat4x4f;
 @group(1) @binding(1) var<uniform> viewMatrix: mat4x4f;
 @group(2) @binding(0) var<uniform> depthRange: vec2f;
@@ -73,7 +73,15 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
 
     output.uv = uv;
     output.isTarget = select(0.0, 1.0, distance((*point).position, scene.targetPosition.xyz) < 0.02);
-    output.color = unpack4x8unorm((*point).color);
+    var pickedColor: u32;
+    if (useClassColors == 1u) {
+        pickedColor = (*point).classColor;
+    } else if (useClassColors == 2u) {
+        pickedColor = (*point).lasClassColor;
+    } else {
+        pickedColor = (*point).color;
+    }
+    output.color = unpack4x8unorm(pickedColor);
     return output;
 }
 

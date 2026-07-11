@@ -6,7 +6,7 @@ const MODE_META = {
 };
 
 export class RenderingControls {
-    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onClassColorChange, onMasksLoaded, onDownloadLas }) {
+    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onColorModeChange, onMasksLoaded, onDownloadLas }) {
         this.modes            = modes;
         this.currentMode      = currentMode;
         this.currentPointSize = currentPointSize;
@@ -15,16 +15,18 @@ export class RenderingControls {
         this.useReconstruction = useReconstruction;
         this.onReconstructionChange = onReconstructionChange;
         this.onOrthoChange      = onOrthoChange;
-        this.onClassColorChange = onClassColorChange;
+        this.onColorModeChange  = onColorModeChange;
         this.onMasksLoaded      = onMasksLoaded;
         this.onDownloadLas      = onDownloadLas;
         this.orthoMode          = false;
-        this.classColorMode     = false;
+        this.colorMode          = 0; // 0=RGB, 1=segmentation classes, 2=LAS classes
+        this.votingMode         = 'simple';
         this._modeButtons     = {};
         this._reconstructionCheckbox = null;
         this._orthoBtn        = null;
         this._orthoHint       = null;
         this._classBtn        = null;
+        this._lasClassBtn     = null;
         this._segStatusEl     = null;
         this._downloadBtn     = null;
     }
@@ -130,18 +132,24 @@ export class RenderingControls {
 
         const classBtn = document.createElement("button");
         classBtn.className = "rc-ortho-btn";
-        classBtn.innerHTML = `<span>◈</span> Classification`;
+        classBtn.innerHTML = `<span>◈</span> Segmentation classes`;
         classBtn.addEventListener('click', () => {
-            if (this.currentMode !== "POINTS") return;
-            this.classColorMode = !this.classColorMode;
-            classBtn.classList.toggle('active', this.classColorMode);
-            classBtn.innerHTML = this.classColorMode
-                ? `<span>◈</span> Classification <span class="rc-ortho-tag">[ON]</span>`
-                : `<span>◈</span> Classification`;
-            if (this.onClassColorChange) this.onClassColorChange(this.classColorMode);
+            const next = this.colorMode === 1 ? 0 : 1;
+            this._setColorMode(next);
         });
         this._classBtn = classBtn;
         panel.appendChild(classBtn);
+
+        const lasClassBtn = document.createElement("button");
+        lasClassBtn.className = "rc-ortho-btn";
+        lasClassBtn.innerHTML = `<span>◉</span> LAS classes`;
+        lasClassBtn.style.marginTop = "4px";
+        lasClassBtn.addEventListener('click', () => {
+            const next = this.colorMode === 2 ? 0 : 2;
+            this._setColorMode(next);
+        });
+        this._lasClassBtn = lasClassBtn;
+        panel.appendChild(lasClassBtn);
 
         const div4 = document.createElement("div");
         div4.className = "rc-divider";
@@ -171,10 +179,43 @@ export class RenderingControls {
         segLabel.textContent = "Segmentation";
         panel.appendChild(segLabel);
 
+        const votingLabel = document.createElement("div");
+        votingLabel.style.cssText = "font-size:11px;color:#889;margin-bottom:6px;";
+        votingLabel.textContent = "Voting mode";
+        panel.appendChild(votingLabel);
+
+        const votingGrid = document.createElement("div");
+        votingGrid.className = "rc-mode-grid";
+        votingGrid.style.marginBottom = "10px";
+
+        const simpleBtn = document.createElement("button");
+        simpleBtn.className = "rc-mode-btn" + (this.votingMode === 'simple' ? " active" : "");
+        simpleBtn.textContent = "Simple";
+        simpleBtn.title = "Per-point argmax";
+
+        const spatialBtn = document.createElement("button");
+        spatialBtn.className = "rc-mode-btn" + (this.votingMode === 'spatial' ? " active" : "");
+        spatialBtn.textContent = "Spatial";
+        spatialBtn.title = "Top-3 + voxel neighbourhood refinement";
+
+        simpleBtn.addEventListener("click", () => {
+            this.votingMode = 'simple';
+            simpleBtn.classList.add('active');
+            spatialBtn.classList.remove('active');
+        });
+        spatialBtn.addEventListener("click", () => {
+            this.votingMode = 'spatial';
+            spatialBtn.classList.add('active');
+            simpleBtn.classList.remove('active');
+        });
+
+        votingGrid.append(simpleBtn, spatialBtn);
+        panel.appendChild(votingGrid);
+
         const fileInput = document.createElement("input");
         fileInput.type = "file"; fileInput.accept = ".zip"; fileInput.style.display = "none";
         fileInput.addEventListener("change", () => {
-            if (fileInput.files[0] && this.onMasksLoaded) this.onMasksLoaded(fileInput.files[0]);
+            if (fileInput.files[0] && this.onMasksLoaded) this.onMasksLoaded(fileInput.files[0], this.votingMode);
         });
         panel.appendChild(fileInput);
 
@@ -204,11 +245,29 @@ export class RenderingControls {
     }
 
     enableClassification() {
-        if (!this._classBtn) return;
-        this.classColorMode = true;
-        this._classBtn.classList.add('active');
-        this._classBtn.innerHTML = `<span>◈</span> Classification <span class="rc-ortho-tag">[ON]</span>`;
-        if (this.onClassColorChange) this.onClassColorChange(true);
+        this._setColorMode(1);
+    }
+
+    _setColorMode(mode) {
+        this.colorMode = mode;
+
+        const classActive = mode === 1;
+        const lasActive   = mode === 2;
+
+        if (this._classBtn) {
+            this._classBtn.classList.toggle('active', classActive);
+            this._classBtn.innerHTML = classActive
+                ? `<span>◈</span> Segmentation classes <span class="rc-ortho-tag">[ON]</span>`
+                : `<span>◈</span> Segmentation classes`;
+        }
+        if (this._lasClassBtn) {
+            this._lasClassBtn.classList.toggle('active', lasActive);
+            this._lasClassBtn.innerHTML = lasActive
+                ? `<span>◉</span> LAS classes <span class="rc-ortho-tag">[ON]</span>`
+                : `<span>◉</span> LAS classes`;
+        }
+
+        if (this.onColorModeChange) this.onColorModeChange(mode);
     }
 
     _selectMode(mode) {
@@ -235,17 +294,6 @@ export class RenderingControls {
         label.style.opacity = isPointsMode ? "1" : "0.5";
         label.style.pointerEvents = isPointsMode ? "auto" : "none";
 
-        if (this._classBtn) {
-            if (!isPointsMode && this.classColorMode) {
-                // turn off class colors when leaving POINTS mode
-                this.classColorMode = false;
-                this._classBtn.classList.remove('active');
-                this._classBtn.innerHTML = `<span>◈</span> Classification`;
-                if (this.onClassColorChange) this.onClassColorChange(false);
-            }
-            this._classBtn.style.opacity = isPointsMode ? "1" : "0.5";
-            this._classBtn.style.pointerEvents = isPointsMode ? "auto" : "none";
-        }
     }
 
     _sliderToSize(v) { return 0.02 + (v / 1000) * 0.9; }

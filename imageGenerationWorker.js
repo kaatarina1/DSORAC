@@ -862,7 +862,10 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
         for (const { pc } of batchesWithDepth) {
             renderPass.setBindGroup(0, device.createBindGroup({
                 layout: pipeline.getBindGroupLayout(0),
-                entries: [{ binding: 0, resource: { buffer: pc.pointBuffer } }],
+                entries: [
+                    { binding: 0, resource: { buffer: pc.pointBuffer } },
+                    { binding: 1, resource: { buffer: useClassColorsBuffer } },
+                ],
             }));
             renderPass.draw(pc.numberOfPoints * 6);
         }

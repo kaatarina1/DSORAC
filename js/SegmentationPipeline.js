@@ -110,13 +110,17 @@ export class SegmentationPipeline {
     pointclouds;
     classPalette;
     controls;
+    bbMin;
+    bbMax;
 
-    constructor({ device, numberOfAllPoints, pointclouds, classPalette, controls }) {
+    constructor({ device, numberOfAllPoints, pointclouds, classPalette, controls, bbMin, bbMax }) {
         this.device = device;
         this.numberOfAllPoints = numberOfAllPoints;
         this.pointclouds = pointclouds;
         this.classPalette = classPalette;
         this.controls = controls;
+        this.bbMin = bbMin;
+        this.bbMax = bbMax;
     }
 
     // Iz COLMAP quaternionov in translacij dobimo view matriko
@@ -149,7 +153,7 @@ export class SegmentationPipeline {
         return P;
     }
 
-    async processZip(zipFile) {
+    async processZip(zipFile, votingMode = 'simple') {
         this.controls.setSegmentationStatus('Reading ZIP...');
 
         let zipData;
@@ -234,10 +238,10 @@ export class SegmentationPipeline {
 
         this.controls.setSegmentationStatus(`${matchedMasks.length}/${maskFiles.length} masks match — starting proccessing...`);
 
-        await this.runSegmentation(zipData, cameras, images, matchedMasks, classMapping);
+        await this.runSegmentation(zipData, cameras, images, matchedMasks, classMapping, votingMode);
     }
 
-    async runSegmentation(zipData, cameras, images, matchedMasks, classMapping) {
+    async runSegmentation(zipData, cameras, images, matchedMasks, classMapping, votingMode = 'simple') {
         const device = this.device;
         const numberOfAllPoints = this.numberOfAllPoints;
         const pointclouds = this.pointclouds;
@@ -337,6 +341,7 @@ export class SegmentationPipeline {
         });
 
         let processed = 0;
+        const presentClassIds = new Set();
 
         for (const maskPath of matchedMasks) {
             const name = maskPath.split('/').pop();
@@ -387,6 +392,8 @@ export class SegmentationPipeline {
             const pngBytes = await zipData.files[maskPath].async('arraybuffer');
             const classIds = await decodeMaskPng(pngBytes);
 
+            for (const id of classIds) presentClassIds.add(id);
+
             const maskU32 = new Uint32Array(MASK_W * MASK_H);
             for (let i = 0; i < classIds.length; i++) maskU32[i] = classIds[i];
             device.queue.writeBuffer(maskBuffer, 0, maskU32);
@@ -407,17 +414,10 @@ export class SegmentationPipeline {
             controls.setSegmentationStatus(`Voting: ${processed}/${matchedMasks.length}`);
         }
 
-        controls.setSegmentationStatus('Argmax...');
+        // Post-voting: določitev razredov
+        controls.setSegmentationStatus(votingMode === 'spatial' ? 'Prostorsko glasovanje...' : 'Argmax...');
 
-        const [argmaxCode, applyCode] = await Promise.all([
-            fetch('./shaders/argmax.wgsl').then(r => r.text()),
-            fetch('./shaders/applySegmentation.wgsl').then(r => r.text()),
-        ]);
-
-        const argmaxPipeline = device.createComputePipeline({
-            compute: { module: device.createShaderModule({ code: argmaxCode }), entryPoint: 'argmax' },
-            layout: 'auto',
-        });
+        const applyCode = await fetch('./shaders/applySegmentation.wgsl').then(r => r.text());
         const applyPipeline = device.createComputePipeline({
             compute: { module: device.createShaderModule({ code: applyCode }), entryPoint: 'apply' },
             layout: 'auto',
@@ -430,71 +430,323 @@ export class SegmentationPipeline {
         });
         device.queue.writeBuffer(paletteBuffer, 0, classPalette);
 
-        // Winner buffer: en classColor u32 na globalno točko
         const winnerBuffer = device.createBuffer({
             size: numberOfAllPoints * 4,
-            usage: GPUBufferUsage.STORAGE,
+            usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
         });
 
-        // Argmax params: nClasses, nPoints
-        const argmaxParamsBuffer = device.createBuffer({
-            size: 16,
-            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-        });
-        device.queue.writeBuffer(argmaxParamsBuffer, 0, new Uint32Array([N_CLASSES, numberOfAllPoints, 0, 0]));
-
-        const argmaxBG = device.createBindGroup({
-            layout: argmaxPipeline.getBindGroupLayout(0),
-            entries: [
-                { binding: 0, resource: { buffer: votesBuffer } },
-                { binding: 1, resource: { buffer: paletteBuffer } },
-                { binding: 2, resource: { buffer: winnerBuffer } },
-                { binding: 3, resource: { buffer: argmaxParamsBuffer } },
-            ],
+        // Per-cell nBufs — skupni za voxelVote, spatialRefine in applySegmentation
+        const cellNBufs = pointclouds.map(pc => {
+            const buf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+            device.queue.writeBuffer(buf, 0, new Uint32Array([pc.numberOfPoints, 0, 0, 0]));
+            return buf;
         });
 
-        // argmax: iz glasov določimo zmagovalni razred
-        {
-            const enc   = device.createCommandEncoder();
-            const cpass = enc.beginComputePass();
-            cpass.setPipeline(argmaxPipeline);
-            cpass.setBindGroup(0, argmaxBG);
-            cpass.dispatchWorkgroups(Math.ceil(numberOfAllPoints / 256));
-            cpass.end();
-            device.queue.submit([enc.finish()]);
-            await device.queue.onSubmittedWorkDone();
-        }
+        if (votingMode === 'spatial') {
+            // Prostorsko glasovanje
+            const bbMin = this.bbMin;
+            const bbMax = this.bbMax;
 
-        const applyBGs = pointclouds.map(pc => {
-            const nBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-            device.queue.writeBuffer(nBuf, 0, new Uint32Array([pc.numberOfPoints, 0, 0, 0]));
-            return device.createBindGroup({
-                layout: applyPipeline.getBindGroupLayout(0),
+            // Adaptive grid: razdelimo na ~0.5 scene-unit voxelov, 
+            // maksimalno 64 delitev na os, maksimalno 256 MB prostora
+            const TARGET_VOXEL_SIZE = 0.5;
+            const MAX_AXIS = 64;
+            const MAX_MEM  = 256 * 1024 * 1024;
+
+            let GRID_X = Math.max(1, Math.min(MAX_AXIS, Math.round((bbMax[0] - bbMin[0]) / TARGET_VOXEL_SIZE)));
+            let GRID_Y = Math.max(1, Math.min(MAX_AXIS, Math.round((bbMax[1] - bbMin[1]) / TARGET_VOXEL_SIZE)));
+            let GRID_Z = Math.max(1, Math.min(MAX_AXIS, Math.round((bbMax[2] - bbMin[2]) / TARGET_VOXEL_SIZE)));
+
+            const memNeeded = GRID_X * GRID_Y * GRID_Z * N_CLASSES * 4;
+            if (memNeeded > MAX_MEM) {
+                const scale = Math.cbrt(MAX_MEM / (N_CLASSES * 4) / (GRID_X * GRID_Y * GRID_Z));
+                GRID_X = Math.max(1, Math.round(GRID_X * scale));
+                GRID_Y = Math.max(1, Math.round(GRID_Y * scale));
+                GRID_Z = Math.max(1, Math.round(GRID_Z * scale));
+            }
+
+            const N_VOXELS = GRID_X * GRID_Y * GRID_Z;
+            console.log(`Voxel grid: ${GRID_X}×${GRID_Y}×${GRID_Z} = ${N_VOXELS} voxels (${(N_VOXELS * N_CLASSES * 4 / 1024 / 1024).toFixed(0)} MB)`);
+
+            const [topkCode, voxVoteCode, voxArgCode, spatRefCode] = await Promise.all([
+                fetch('./shaders/topkArgmax.wgsl').then(r => r.text()),
+                fetch('./shaders/voxelVote.wgsl').then(r => r.text()),
+                fetch('./shaders/voxelArgmax.wgsl').then(r => r.text()),
+                fetch('./shaders/spatialRefine.wgsl').then(r => r.text()),
+            ]);
+
+            const topkPipeline = device.createComputePipeline({
+                compute: { module: device.createShaderModule({ code: topkCode }), entryPoint: 'topkArgmax' },
+                layout: 'auto',
+            });
+            const voxelVotePipeline = device.createComputePipeline({
+                compute: { module: device.createShaderModule({ code: voxVoteCode }), entryPoint: 'voxelVote' },
+                layout: 'auto',
+            });
+            const voxelArgmaxPipeline = device.createComputePipeline({
+                compute: { module: device.createShaderModule({ code: voxArgCode }), entryPoint: 'voxelArgmax' },
+                layout: 'auto',
+            });
+            const spatialRefinePipeline = device.createComputePipeline({
+                compute: { module: device.createShaderModule({ code: spatRefCode }), entryPoint: 'spatialRefine' },
+                layout: 'auto',
+            });
+
+            // Bufferji za prostorski pipeline
+            const topKBuffer = device.createBuffer({
+                size: numberOfAllPoints * 3 * 4,
+                usage: GPUBufferUsage.STORAGE,
+            });
+            const voxelClassVotesBuffer = device.createBuffer({
+                size: N_VOXELS * N_CLASSES * 4,
+                usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+            });
+            {
+                const enc = device.createCommandEncoder();
+                enc.clearBuffer(voxelClassVotesBuffer);
+                device.queue.submit([enc.finish()]);
+            }
+            const voxelWinnerBuffer = device.createBuffer({
+                size: N_VOXELS * 4,
+                usage: GPUBufferUsage.STORAGE,
+            });
+
+            // Skupni params z grid dimenzijami in bounding boxom
+            const voxelParamsBuffer = device.createBuffer({
+                size: 48,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            {
+                const d  = new ArrayBuffer(48);
+                const ui = new Uint32Array(d);
+                const fl = new Float32Array(d);
+                ui[0] = GRID_X; ui[1] = GRID_Y; ui[2] = GRID_Z; ui[3] = N_CLASSES;
+                fl[4] = bbMin[0];  fl[5] = bbMin[1];  fl[6] = bbMin[2];  fl[7] = 0;
+                fl[8] = bbMax[0];  fl[9] = bbMax[1];  fl[10] = bbMax[2]; fl[11] = 0;
+                device.queue.writeBuffer(voxelParamsBuffer, 0, d);
+            }
+
+            // 1. topkArgmax: določimo top k = 3 razredov glede na glasove
+            controls.setSegmentationStatus('Spatial: top-K argmax...');
+            const topkParamsBuffer = device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(topkParamsBuffer, 0, new Uint32Array([N_CLASSES, numberOfAllPoints, 0, 0]));
+
+            const topkBG = device.createBindGroup({
+                layout: topkPipeline.getBindGroupLayout(0),
                 entries: [
-                    { binding: 0, resource: { buffer: pc.pointBuffer } },
-                    { binding: 1, resource: { buffer: winnerBuffer } },
-                    { binding: 2, resource: { buffer: nBuf } },
+                    { binding: 0, resource: { buffer: votesBuffer } },
+                    { binding: 1, resource: { buffer: topKBuffer } },
+                    { binding: 2, resource: { buffer: topkParamsBuffer } },
                 ],
             });
-        });
-
-        // Na podlagi zmagovalnih razredov pripišemo id zmagovalnega razreda točki
-        // objektu Point določimo atribut classColor
-        {
-            const enc   = device.createCommandEncoder();
-            const cpass = enc.beginComputePass();
-            cpass.setPipeline(applyPipeline);
-            for (let i = 0; i < pointclouds.length; i++) {
-                cpass.setBindGroup(0, applyBGs[i]);
-                cpass.dispatchWorkgroups(Math.ceil(pointclouds[i].numberOfPoints / 256));
+            {
+                const enc = device.createCommandEncoder();
+                const cp  = enc.beginComputePass();
+                cp.setPipeline(topkPipeline);
+                cp.setBindGroup(0, topkBG);
+                cp.dispatchWorkgroups(Math.ceil(numberOfAllPoints / 256));
+                cp.end();
+                device.queue.submit([enc.finish()]);
+                await device.queue.onSubmittedWorkDone();
             }
-            cpass.end();
+
+            // 2. voxelVote (po celicah): določimo glasove za rezrede posameznega voxla
+            controls.setSegmentationStatus('Spatial: voxel voting...');
+            const voxelVoteGlobalBG = device.createBindGroup({
+                layout: voxelVotePipeline.getBindGroupLayout(1),
+                entries: [
+                    { binding: 0, resource: { buffer: topKBuffer } },
+                    { binding: 1, resource: { buffer: voxelClassVotesBuffer } },
+                    { binding: 2, resource: { buffer: voxelParamsBuffer } },
+                ],
+            });
+            const voxelVoteCellBGs = pointclouds.map((pc, i) => device.createBindGroup({
+                layout: voxelVotePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: pc.pointBuffer } },
+                    { binding: 1, resource: { buffer: cellNBufs[i] } },
+                ],
+            }));
+            {
+                const enc = device.createCommandEncoder();
+                const cp  = enc.beginComputePass();
+                cp.setPipeline(voxelVotePipeline);
+                cp.setBindGroup(1, voxelVoteGlobalBG);
+                for (let i = 0; i < pointclouds.length; i++) {
+                    cp.setBindGroup(0, voxelVoteCellBGs[i]);
+                    cp.dispatchWorkgroups(Math.ceil(pointclouds[i].numberOfPoints / 256));
+                }
+                cp.end();
+                device.queue.submit([enc.finish()]);
+                await device.queue.onSubmittedWorkDone();
+            }
+
+            // 3. voxelArgmax: določi zmagovalni razred za posamezni voxel
+            controls.setSegmentationStatus('Spatial: voxel argmax...');
+            const voxelArgmaxParamsBuffer = device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(voxelArgmaxParamsBuffer, 0, new Uint32Array([N_VOXELS, N_CLASSES, 0, 0]));
+
+            const voxelArgmaxBG = device.createBindGroup({
+                layout: voxelArgmaxPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: voxelClassVotesBuffer } },
+                    { binding: 1, resource: { buffer: voxelWinnerBuffer } },
+                    { binding: 2, resource: { buffer: voxelArgmaxParamsBuffer } },
+                ],
+            });
+            {
+                const enc = device.createCommandEncoder();
+                const cp  = enc.beginComputePass();
+                cp.setPipeline(voxelArgmaxPipeline);
+                cp.setBindGroup(0, voxelArgmaxBG);
+                cp.dispatchWorkgroups(Math.ceil(N_VOXELS / 256));
+                cp.end();
+                device.queue.submit([enc.finish()]);
+                await device.queue.onSubmittedWorkDone();
+            }
+
+            // 4. spatialRefine (po celicah): 
+            // glede na top k razredov in razrede voxlov v okolici
+            // določimo zmagovalni razred posamezne točke
+            controls.setSegmentationStatus('Spatial: refinement...');
+            const spatialRefineGlobalBG = device.createBindGroup({
+                layout: spatialRefinePipeline.getBindGroupLayout(1),
+                entries: [
+                    { binding: 0, resource: { buffer: topKBuffer } },
+                    { binding: 1, resource: { buffer: voxelWinnerBuffer } },
+                    { binding: 2, resource: { buffer: paletteBuffer } },
+                    { binding: 3, resource: { buffer: winnerBuffer } },
+                    { binding: 4, resource: { buffer: voxelParamsBuffer } },
+                ],
+            });
+            const spatialRefineCellBGs = pointclouds.map((pc, i) => device.createBindGroup({
+                layout: spatialRefinePipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: pc.pointBuffer } },
+                    { binding: 1, resource: { buffer: cellNBufs[i] } },
+                ],
+            }));
+            {
+                const enc = device.createCommandEncoder();
+                const cp  = enc.beginComputePass();
+                cp.setPipeline(spatialRefinePipeline);
+                cp.setBindGroup(1, spatialRefineGlobalBG);
+                for (let i = 0; i < pointclouds.length; i++) {
+                    cp.setBindGroup(0, spatialRefineCellBGs[i]);
+                    cp.dispatchWorkgroups(Math.ceil(pointclouds[i].numberOfPoints / 256));
+                }
+                cp.end();
+                device.queue.submit([enc.finish()]);
+                await device.queue.onSubmittedWorkDone();
+            }
+
+        } else {
+            // Enostavno glasovanje (argmax)
+            const argmaxCode = await fetch('./shaders/argmax.wgsl').then(r => r.text());
+            const argmaxPipeline = device.createComputePipeline({
+                compute: { module: device.createShaderModule({ code: argmaxCode }), entryPoint: 'argmax' },
+                layout: 'auto',
+            });
+
+            const argmaxParamsBuffer = device.createBuffer({
+                size: 16,
+                usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+            });
+            device.queue.writeBuffer(argmaxParamsBuffer, 0, new Uint32Array([N_CLASSES, numberOfAllPoints, 0, 0]));
+
+            const argmaxBG = device.createBindGroup({
+                layout: argmaxPipeline.getBindGroupLayout(0),
+                entries: [
+                    { binding: 0, resource: { buffer: votesBuffer } },
+                    { binding: 1, resource: { buffer: paletteBuffer } },
+                    { binding: 2, resource: { buffer: winnerBuffer } },
+                    { binding: 3, resource: { buffer: argmaxParamsBuffer } },
+                ],
+            });
+            {
+                const enc = device.createCommandEncoder();
+                const cp  = enc.beginComputePass();
+                cp.setPipeline(argmaxPipeline);
+                cp.setBindGroup(0, argmaxBG);
+                cp.dispatchWorkgroups(Math.ceil(numberOfAllPoints / 256));
+                cp.end();
+                device.queue.submit([enc.finish()]);
+                await device.queue.onSubmittedWorkDone();
+            }
+        }
+
+        // applySegmentation: dodamo točkam pointClass
+        const applyBGs = pointclouds.map((pc, i) => device.createBindGroup({
+            layout: applyPipeline.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: { buffer: pc.pointBuffer } },
+                { binding: 1, resource: { buffer: winnerBuffer } },
+                { binding: 2, resource: { buffer: cellNBufs[i] } },
+            ],
+        }));
+        {
+            const enc = device.createCommandEncoder();
+            const cp  = enc.beginComputePass();
+            cp.setPipeline(applyPipeline);
+            for (let i = 0; i < pointclouds.length; i++) {
+                cp.setBindGroup(0, applyBGs[i]);
+                cp.dispatchWorkgroups(Math.ceil(pointclouds[i].numberOfPoints / 256));
+            }
+            cp.end();
             device.queue.submit([enc.finish()]);
             await device.queue.onSubmittedWorkDone();
         }
 
-        // Avtomatsko po določanju razredov zamenjamo pogled na takega
-        // kjer so točke obarvane glede na razred kateremu pripadajo
+        if (classMapping) {
+            const flatMap = classMapping.label_to_id ?? classMapping;
+            const idToName = Object.fromEntries(
+                Object.entries(flatMap)
+                    .filter(([, v]) => Number.isInteger(v))
+                    .map(([name, id]) => [id, name])
+            );
+            const presentEntries = Object.entries(idToName)
+                .filter(([id]) => presentClassIds.has(Number(id)))
+                .sort((a, b) => Number(a[0]) - Number(b[0]));
+            console.log(`Classes present in masks (${presentEntries.length} of ${Object.keys(idToName).length}):`);
+            for (const [id, name] of presentEntries) {
+                const packed = classPalette[Number(id)];
+                const r = (packed >>  0) & 0xFF;
+                const g = (packed >>  8) & 0xFF;
+                const b = (packed >> 16) & 0xFF;
+                console.log(`  %c  %c ${id} — ${name}`, `background:rgb(${r},${g},${b});padding:0 8px`, 'background:none');
+            }
+        }
+
+        // Read back winner colors and reverse-map to class IDs so LAS export can use them
+        {
+            const stagingBuf = device.createBuffer({
+                size: numberOfAllPoints * 4,
+                usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+            });
+            const enc = device.createCommandEncoder();
+            enc.copyBufferToBuffer(winnerBuffer, 0, stagingBuf, 0, numberOfAllPoints * 4);
+            device.queue.submit([enc.finish()]);
+            await stagingBuf.mapAsync(GPUMapMode.READ);
+            const winnerColors = new Uint32Array(stagingBuf.getMappedRange());
+
+            const colorToClassId = new Map();
+            for (let i = 0; i < 256; i++) {
+                if (!colorToClassId.has(classPalette[i])) colorToClassId.set(classPalette[i], i);
+            }
+            this.segClassByGlobalIndex = new Uint8Array(numberOfAllPoints);
+            for (let i = 0; i < numberOfAllPoints; i++) {
+                this.segClassByGlobalIndex[i] = colorToClassId.get(winnerColors[i]) ?? 0;
+            }
+            stagingBuf.unmap();
+            stagingBuf.destroy();
+        }
+
         controls.enableClassification();
         controls.setSegmentationStatus(`Segmentation finished (${processed} views)!`, true);
     }

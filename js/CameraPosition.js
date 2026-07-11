@@ -211,7 +211,7 @@ export class CameraPosition {
 	writePoints3DTxt(positions, colors, scaleFactor = 1.0) {
 		const points = [];
 		const totalPoints = positions.length / 3;
-		const samplingRate = 2; // Vyorčimo vsak 5. point 
+		const samplingRate = 100; // Vyorčimo vsak 5. point 
 		
 		console.log(`Writing points3D.txt with scale factor: ${scaleFactor}, sampling rate: ${samplingRate} (from ${totalPoints} points)`);
 		

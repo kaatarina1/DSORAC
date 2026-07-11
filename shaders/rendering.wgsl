@@ -1,12 +1,12 @@
 struct Point {
-    position:   vec3f,
-    color:      u32,
-    normal:     vec3f,
-    depth:      f32,
-    classColor: u32,
-    _pad0:      u32,
-    _pad1:      u32,
-    _pad2:      u32,
+    position:      vec3f,
+    color:         u32,
+    normal:        vec3f,
+    depth:         f32,
+    classColor:    u32,
+    _pad0:         u32,
+    lasClassColor: u32,
+    _pad2:         u32,
 }
 
 @group(0) @binding(0) var<storage, read> points: array<Point>;
@@ -41,7 +41,15 @@ fn vertex(@builtin(vertex_index) index: u32) -> VertexOutput {
 
     let isTarget = distance((*point).position, targetPosition.xyz) < 0.02;
     output.isTarget = select(0.0, 1.0, isTarget);
-    output.color = select(unpack4x8unorm((*point).color), unpack4x8unorm((*point).classColor), useClassColors != 0u);
+    var pickedColor: u32;
+    if (useClassColors == 1u) {
+        pickedColor = (*point).classColor;
+    } else if (useClassColors == 2u) {
+        pickedColor = (*point).lasClassColor;
+    } else {
+        pickedColor = (*point).color;
+    }
+    output.color = unpack4x8unorm(pickedColor);
     return output;
 }
 
