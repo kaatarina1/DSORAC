@@ -70,6 +70,44 @@ export async function saveTextureToPNG(imageData, width, height, fileName) {
 	document.body.removeChild(a);
 }
 
+export async function saveNormalizedTextureToPNG(imageData, width, height, fileName) {
+	// V workerju ni document — uporabimo OffscreenCanvas
+	const inWorker = typeof document === "undefined";
+	const canvas = inWorker
+		? new OffscreenCanvas(width, height)
+		: document.createElement("canvas");
+	canvas.width = width;
+	canvas.height = height;
+	const ctx = canvas.getContext("2d");
+	const imageDataObj = ctx.createImageData(width, height);
+
+	// Copy the pixel data to the ImageData object
+	for (let i = 0; i < imageData.length; i += 4) {
+		// BGRA to RGBA
+		imageDataObj.data[i] = imageData[i] * 180;
+		imageDataObj.data[i + 1] = imageData[i + 1] * 100;
+		imageDataObj.data[i + 2] = imageData[i + 2] * 200;
+		imageDataObj.data[i + 3] = imageData[i + 3] * 255;
+	}
+	ctx.putImageData(imageDataObj, 0, 0);
+
+	if (inWorker) {
+		// Worker ne more sprožiti prenosa — blob pošljemo glavni niti
+		const blob = await canvas.convertToBlob({ type: "image/png" });
+		self.postMessage({ type: "SAVE_PNG", blob, fileName });
+		return;
+	}
+
+	// Step 5: Convert canvas content to PNG and trigger download
+	const dataURL = canvas.toDataURL("image/png");
+	const a = document.createElement("a");
+	a.href = dataURL;
+	a.download = fileName;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+}
+
 export async function getBlob(imageData, width, height) {
 	// Create an offscreen canvas
     const canvas = document.createElement("canvas");

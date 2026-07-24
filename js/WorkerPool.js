@@ -110,6 +110,19 @@ export class WorkerPool {
                             }
                             break;
 
+                        case 'SAVE_PNG': {
+                            // Worker ne more sprožiti prenosa — to naredimo tukaj
+                            const url = URL.createObjectURL(e.data.blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = e.data.fileName;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            URL.revokeObjectURL(url);
+                            break;
+                        }
+
                         case 'ERROR':
                             failed++;
                             console.error(`Worker ${id} error on image ${e.data.imageIndex}:`, e.data.error);
