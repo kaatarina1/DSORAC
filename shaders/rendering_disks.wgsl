@@ -48,7 +48,14 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let point = &points[pid];
     var output: VertexOutput;
 
-    let toCamera = normalize(scene.cameraPos.xyz - (*point).position);
+    // če je cameraPos.w != 0 to pomeni da uporabljamo ortografsko kamero,
+    // v tem primeru je pozicija kamere konstantna, se pravi vsi diski morejo 
+    // imeti enako orientacijo -> navzgor
+    let toCamera = select(
+        normalize(scene.cameraPos.xyz - (*point).position),
+        scene.cameraPos.xyz,
+        scene.cameraPos.w > 0.5
+    );
 
     var up = vec3f(0.0, 1.0, 0.0);
     if (abs(dot(toCamera, up)) > 0.99) {

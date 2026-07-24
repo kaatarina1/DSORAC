@@ -571,10 +571,11 @@ const sceneParamsBuffer = device.createBuffer({
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 });
 
-function writeSceneParams(tp, camPos, pointSize) {
+function writeSceneParams(tp, camPos, pointSize, isOrtho = false) {
     const data = new Float32Array(12);
     data[0] = tp[0];   data[1] = tp[1];   data[2] = tp[2];   data[3] = 0;   // targetPosition
-    data[4] = camPos[0]; data[5] = camPos[1]; data[6] = camPos[2]; data[7] = 0; // cameraPos
+    // cameraPos.w: 0 = perspektivna kamera, 1 = oortografska kamera (potrebno za dločanje orientacije diskov)
+    data[4] = camPos[0]; data[5] = camPos[1]; data[6] = camPos[2]; data[7] = isOrtho ? 1 : 0; // cameraPos
     data[8] = pointSize; data[9] = 0; data[10] = 0; data[11] = 0;             // pointSize + pad
     device.queue.writeBuffer(sceneParamsBuffer, 0, data);
 }
@@ -1416,8 +1417,7 @@ function frame() {
             }
             SORT = false;
         }
-        // Quad shader path — group(3) so SceneParams { targetPosition, cameraPos, pointSize }
-        writeSceneParams(tp, orthoMode ? [orthoPanX, orthoEyeY, orthoPanZ] : cameraPosition, currentPointSize);
+        writeSceneParams(tp, orthoMode ? [0, 1, 0] : cameraPosition, currentPointSize, orthoMode);
         const pipeline = quadPipelines[currentMode];
         const depthRangeBindGroup = device.createBindGroup({
             layout: pipeline.getBindGroupLayout(2),
