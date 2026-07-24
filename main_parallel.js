@@ -153,6 +153,17 @@ class WorkerPool {
                             }
                             break;
 
+                        case 'SAVE_PNG': {
+                            // Prenos PNG-ja, ki ga je worker poslal (debug)
+                            const url = URL.createObjectURL(e.data.blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = e.data.fileName;
+                            a.click();
+                            URL.revokeObjectURL(url);
+                            break;
+                        }
+
                         case 'ERROR':
                             const errorImageIndex = e.data.imageIndex;
                             if (!failedImages.has(errorImageIndex) && !processedImages.has(errorImageIndex)) {
