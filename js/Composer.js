@@ -14,6 +14,7 @@ export class Composer {
         this.depthPoints = [];
         this.reconstructions = [];
         this.sdfs = [];
+        this.densities = [];
 		this.depths = [];
 
         this.backgroundTexture = null;
@@ -365,7 +366,7 @@ export class Composer {
         }
     }
 
-    async addLayers(sdf, reconstruction, points, depth) {
+    async addLayers(sdf, density, reconstruction, points, depth) {
 		const reconstructionTexture = this.device.createTexture({
 			size: [this.width, this.height],
 			format: "rgba32float",
@@ -376,6 +377,15 @@ export class Composer {
 				GPUTextureUsage.STORAGE_BINDING,
 		});
 		const sdfTexture = this.device.createTexture({
+			size: [this.width, this.height],
+			format: "rgba32float",
+			usage:
+				GPUTextureUsage.TEXTURE_BINDING |
+				GPUTextureUsage.COPY_DST |
+				GPUTextureUsage.COPY_SRC |
+				GPUTextureUsage.STORAGE_BINDING,
+		});
+        const densityTexture = this.device.createTexture({
 			size: [this.width, this.height],
 			format: "rgba32float",
 			usage:
@@ -406,6 +416,11 @@ export class Composer {
 			{ texture: sdfTexture },
 			[this.width, this.height]
 		);
+        commandEncoder.copyTextureToTexture(
+			{ texture: density },
+			{ texture: densityTexture },
+			[this.width, this.height]
+		);
 		commandEncoder.copyTextureToTexture(
 			{ texture: points },
 			{ texture: pointsTexture },
@@ -416,6 +431,7 @@ export class Composer {
 		this.depthPoints.push(pointsTexture);
 		this.reconstructions.push(reconstructionTexture);
 		this.sdfs.push(sdfTexture);
+		this.densities.push(densityTexture);
 		this.depths.push(depth);
 	}
 
@@ -442,6 +458,17 @@ export class Composer {
 			dimension: "2d",
 		});
 
+        const densityTextures = this.device.createTexture({
+			size: {
+				width: this.width,
+				height: this.height,
+				depthOrArrayLayers: this.densities.length,
+			},
+			format: "rgba32float",
+			usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+			dimension: "2d",
+		});
+
 		const pointsTexture = this.device.createTexture({
 			size: {
 				width: this.width,
@@ -458,18 +485,6 @@ export class Composer {
 			format: "rgba32float",
 			usage: GPUTextureUsage.COPY_SRC | GPUTextureUsage.STORAGE_BINDING,
 		});
-
-		const uniformData = new ArrayBuffer(12);
-		const uniformView = new Uint32Array(uniformData);
-		uniformView[0] = this.width;
-		uniformView[1] = this.height;
-		uniformView[2] = this.reconstructions.length;
-
-		const uniformBuffer = this.device.createBuffer({
-			size: 12,
-			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-		});
-		this.device.queue.writeBuffer(uniformBuffer, 0, uniformData);
 
 		const commandEncoder = this.device.createCommandEncoder();
 
@@ -488,6 +503,11 @@ export class Composer {
 				[this.width, this.height, 1]
 			);
 			commandEncoder.copyTextureToTexture(
+				{ texture: this.densities[i] },
+				{ texture: densityTextures, origin: { x: 0, y: 0, z: i } },
+				[this.width, this.height, 1]
+			);
+			commandEncoder.copyTextureToTexture(
 				{ texture: this.depthPoints[i] },
 				{ texture: pointsTexture, origin: { x: 0, y: 0, z: i } },
 				[this.width, this.height, 1]
@@ -499,21 +519,6 @@ export class Composer {
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 		});
         this.device.queue.writeBuffer(depthsBuffer, 0, new Float32Array(this.depths))
-
-        const iDepthsBuffer = this.device.createBuffer({
-			size: this.depthPoints.length * 4,
-			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-		});
-
-        const iColorXBuffer = this.device.createBuffer({
-			size: this.depthPoints.length * 4,
-			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-		});
-
-        const iColorYBuffer = this.device.createBuffer({
-			size: this.depthPoints.length * 4,
-			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-		})
 
 		const compositePipeline = await this.createCompositePipeline();
 
@@ -534,12 +539,18 @@ export class Composer {
 				},
 				{
 					binding: 2,
-					resource: pointsTexture.createView({
+					resource: densityTextures.createView({
 						dimension: "2d-array",
 					}),
 				},
 				{
 					binding: 3,
+					resource: pointsTexture.createView({
+						dimension: "2d-array",
+					}),
+				},
+				{
+					binding: 4,
 					resource: outputTexture.createView(),
 				},
 			],
@@ -550,23 +561,7 @@ export class Composer {
 			entries: [
 				{
 					binding: 0,
-					resource: { buffer: uniformBuffer },
-				},
-				{
-					binding: 1,
 					resource: { buffer: depthsBuffer },
-				},
-				{
-					binding: 2,
-					resource: { buffer: iDepthsBuffer },
-				},
-				{
-					binding: 3,
-					resource: { buffer: iColorXBuffer },
-				},
-				{
-					binding: 4,
-					resource: { buffer: iColorYBuffer },
 				},
 			],
 		});
@@ -615,12 +610,22 @@ export class Composer {
 
 		reconstructionTextures.destroy();
 		sdfTextures.destroy();
+		densityTextures.destroy();
 		pointsTexture.destroy();
 		outputTexture.destroy();
-		uniformBuffer.destroy();
+        depthsBuffer.destroy();
+        outputBuffer.destroy()
+
+        for (let i = 0; i < this.reconstructions.length; i++) {
+            this.reconstructions[i].destroy();
+            this.sdfs[i].destroy();
+            this.densities[i].destroy();
+            this.depthPoints[i].destroy();
+        }
 
 		this.reconstructions = [];
 		this.sdfs = [];
+        this.densities = [];
 		this.depthPoints = [];
 		this.depths = [];
 

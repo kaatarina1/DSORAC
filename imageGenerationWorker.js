@@ -712,7 +712,8 @@ async function renderPointsInDepthRange(
     });
 
     const sdf = new SignedDistanceFiled(device, captureTexture, canvas.width, canvas.height);
-    const sdfTexture = await sdf.generateSDF();
+    const { sdf: sdfTexture, density: densityTexture } = await sdf.generateSDF();
+    // const sdfTexture = await sdf.generateSDF();
 
     let solver = new Solver(canvas, device);
     await solver.sorRedBlack(captureTexture, reconstructionRead, reconstructionWrite);
@@ -728,7 +729,8 @@ async function renderPointsInDepthRange(
 
     await convertTexture(device, canvas.width, canvas.height, captureTexture, pointsTexture);
 
-    await composer.addLayers(sdfTexture, reconstructionRead, pointsTexture, (minDepth + maxDepth) / 2);
+    // await composer.addLayers(sdfTexture, reconstructionRead, pointsTexture, (minDepth + maxDepth) / 2);
+    await composer.addLayers(sdfTexture, densityTexture, reconstructionRead, pointsTexture, (minDepth + maxDepth) / 2);
     
     await device.queue.onSubmittedWorkDone();
 
@@ -736,11 +738,13 @@ async function renderPointsInDepthRange(
     reconstructionRead.destroy();
     reconstructionWrite.destroy();
     sdfTexture.destroy();
+    densityTexture.destroy();
     pointsTexture.destroy();
     mvpBuf.destroy();
     viewBuf.destroy();
     drBuf.destroy();
     tBuf.destroy();
+    sdf.destroyTexture();
 }
 
 async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraPosition, pointSize, mode) {

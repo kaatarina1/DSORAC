@@ -1,7 +1,8 @@
-import { saveMaskToPNG, saveSDFToPNG, saveTextureToPNG } from "./Utils";
+import { constants } from "buffer";
+import { saveMaskToPNG, saveNormalizedTextureToPNG, saveSDFToPNG, saveTextureToPNG } from "./Utils";
 
 export class SignedDistanceFiled {
-  constructor(device, texture, width, height) {
+  constructor(device, texture, width, height, blurRadius = 4, blurSigma = 2.0, densityRadius = 30, densitySigma = 15.0) {
     this.device = device;
     this.texture = texture;
     this.width = width;
@@ -17,9 +18,22 @@ export class SignedDistanceFiled {
     this.coordBTexture = null;
     this.sdfTexture = null;
     this.sdfBlurred = null;
+    this.maskTex = null;
+    this.densityTexture = null;
+    this.densityTemp = null;
+    this.sdfTemp = null;
 
     this.jfaParamsBuffer = null;   // step (i32), width (u32), height (u32)
     this.distParamsBuffer = null;  // normFactor (f32), width (f32), height (f32)
+
+    // blur parametri
+    this.blurRadius = blurRadius;
+    this.blurSigma = blurSigma;
+    this.densityRadius = densityRadius;
+    this.densitySigma = densitySigma;
+
+    this.blurParamsBuffer = null;
+    this.densityParamsBuffer = null;
   }
 
   getJfaParamsBuffer() {
@@ -40,6 +54,26 @@ export class SignedDistanceFiled {
       });
     }
     return this.distParamsBuffer;
+  }
+
+  getBlurParamsBuffer() {
+    if (!this.blurParamsBuffer) {
+      this.blurParamsBuffer = this.device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    return this.blurParamsBuffer;
+  }
+
+  getDensityParamsBuffer() {
+    if (!this.densityParamsBuffer) {
+      this.densityParamsBuffer = this.device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+    }
+    return this.densityParamsBuffer;
   }
 
   async createClosedPipeline() {
@@ -115,7 +149,7 @@ export class SignedDistanceFiled {
   createMaskTexture() {
     return this.device.createTexture({ 
       size: [this.width, this.height], 
-      format: "r32uint", 
+      format: "rgba32float", 
       usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC 
     });
   }
@@ -149,11 +183,14 @@ export class SignedDistanceFiled {
     await this.createDistancePipeline();
     await this.createBlurPipeline();
 
-    const maskTex = this.createMaskTexture();
+    this.maskTex = this.createMaskTexture();
     this.coordATexture = this.createCoordTexture();
     this.coordBTexture = this.createCoordTexture();
     this.sdfTexture = this.createSdfTexture();
     this.sdfBlurred = this.createSdfTexture();
+    this.sdfTemp = this.createSdfTexture();
+    this.densityTemp = this.createSdfTexture();
+    this.densityTexture = this.createSdfTexture();
 
     // Seed mask
     const maskBind = this.device.createBindGroup({ 
@@ -163,7 +200,7 @@ export class SignedDistanceFiled {
           binding: 0, resource: this.texture.createView() 
         }, 
         { 
-          binding: 1, resource: maskTex.createView() 
+          binding: 1, resource: this.maskTex.createView() 
         } 
       ] 
     });
@@ -181,7 +218,7 @@ export class SignedDistanceFiled {
       layout: this.initCoordsPipeline.getBindGroupLayout(0), 
       entries: [ 
         { 
-          binding: 0, resource: maskTex.createView() 
+          binding: 0, resource: this.maskTex.createView() 
         }, 
         { 
           binding: 1, resource: this.coordATexture.createView() 
@@ -293,29 +330,114 @@ export class SignedDistanceFiled {
     await this.device.queue.onSubmittedWorkDone();
 
     // Blur pass
-    const blurBind = this.device.createBindGroup({ 
-      layout: this.blurPipeline.getBindGroupLayout(0), 
-      entries: [ 
-        { 
-          binding: 0, resource: this.sdfTexture.createView() 
-        }, 
-        { 
-          binding: 1, resource: this.sdfBlurred.createView() 
-        } 
-      ] 
-    });
-
-    const enc3 = this.device.createCommandEncoder();
-    { 
-      const pass = enc3.beginComputePass(); 
-      pass.setPipeline(this.blurPipeline); 
-      pass.setBindGroup(0, blurBind); 
-      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8), 1); 
-      pass.end(); 
+    const blurParams = this.getBlurParamsBuffer();
+    const doBlurPass = (inputTex, outputTex, axisX, axisY) =>{
+      const params = new Float32Array([this.blurSigma, this.blurRadius, axisX, axisY]);
+      this.device.queue.writeBuffer(blurParams, 0, params.buffer);
+      const blurBind = this.device.createBindGroup({ 
+        layout: this.blurPipeline.getBindGroupLayout(0), 
+        entries: [ 
+          { 
+            binding: 0, resource: inputTex.createView() 
+          }, 
+          { 
+            binding: 1, resource: outputTex.createView() 
+          }, 
+          { 
+            binding: 2, resource: { buffer: blurParams } 
+          },
+        ] 
+      });
+      const enc = this.device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(this.blurPipeline);
+      pass.setBindGroup(0, blurBind);
+      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
+      pass.end();
+      this.device.queue.submit([enc.finish()]);
     }
-    this.device.queue.submit([enc3.finish()]);
+
+    doBlurPass(this.sdfTexture, this.sdfTemp, 1, 0);
+    doBlurPass(this.sdfTemp, this.sdfBlurred, 0, 1);
+    await this.device.queue.onSubmittedWorkDone();
+    
+    // KDE pass
+    const densityParams = this.getDensityParamsBuffer();
+    const doDensityBlurPass = (inputTex, outputTex, axisX, axisY) =>{
+      const params = new Float32Array([this.densitySigma, this.densityRadius, axisX, axisY]);
+      this.device.queue.writeBuffer(densityParams, 0, params.buffer);
+      const densityBind = this.device.createBindGroup({ 
+        layout: this.blurPipeline.getBindGroupLayout(0), 
+        entries: [ 
+          { 
+            binding: 0, resource: inputTex.createView() 
+          }, 
+          { 
+            binding: 1, resource: outputTex.createView() 
+          }, 
+          { 
+            binding: 2, resource: { buffer: densityParams } 
+          },
+        ] 
+      });
+      const enc = this.device.createCommandEncoder();
+      const pass = enc.beginComputePass();
+      pass.setPipeline(this.blurPipeline);
+      pass.setBindGroup(0, densityBind);
+      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
+      pass.end();
+      this.device.queue.submit([enc.finish()]);
+    }
+
+    doDensityBlurPass(this.maskTex, this.densityTemp, 1, 0);
+    doDensityBlurPass(this.densityTemp, this.densityTexture, 0, 1);
     await this.device.queue.onSubmittedWorkDone();
 
-    return this.sdfBlurred;
+    /* const buffer = await this.device.createBuffer({
+      size: this.width * this.height * 16,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+
+    const encTest = this.device.createCommandEncoder();
+    encTest.copyTextureToBuffer(
+      { texture: this.sdfBlurred },
+      { buffer, bytesPerRow: this.width * 16 },
+      [this.width, this.height]
+    );
+    this.device.queue.submit([encTest.finish()]);
+
+    await buffer.mapAsync(GPUMapMode.READ);
+    const data = new Float32Array(buffer.getMappedRange());
+    await saveNormalizedTextureToPNG(data, this.width, this.height, "mask.png");
+    buffer.unmap(); */
+
+    return { sdf: this.sdfBlurred, density: this.densityTexture };
+  }
+  
+  destroyTexture() {
+    if (this.sdfTexture) {
+      this.sdfTexture.destroy();
+    }
+    if (this.sdfBlurred) {
+      this.sdfBlurred.destroy();
+    }
+    if (this.sdfTemp) {
+      this.sdfTemp.destroy();
+    }
+    if (this.coordATexture) {
+      this.coordATexture.destroy();
+    }
+    if (this.coordBTexture) {
+      this.coordBTexture.destroy();
+    }
+    if (this.maskTex) {
+      this.maskTex.destroy();
+    }
+    if (this.densityTemp) {
+      this.densityTemp.destroy();
+    }
+    if (this.densityTexture) {
+      this.densityTexture.destroy();
+    }
   }
 }
