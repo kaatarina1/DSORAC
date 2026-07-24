@@ -14,26 +14,43 @@ const CONFIG = {
     canvasWidth: 1024,
     canvasHeight: 512,
     workerCount: Math.min(7, navigator.hardwareConcurrency || 6),
-    batchSize: 20,
+    batchSize: 50,
     reconstructionColorOrder: "rgb",
     simpleRenderingColorOrder: "bgr",
-    hemisphereRadii: [/*325, 200, 140, 110,*/ 3.5/*150*/],
-    imagesPerCombination: 50, // 110
-    lasFile: "./data/pc/room_normals.las",
-    targetPositions: [
-        //[0, 0, 0],
-        [0, 0.8, 0],
-        // [-40, 15, -20],
-        // [40, 15, -20],
-        // [-40, 15, 10],
-        // [40, 15, 10],
-        // [-0.1, -0.17, 0],
-        // [0, -0.17, 0.1],
-        // [0, -0.17, -0.1],
-        // [0.1, -0.17, 0.1],
-        // [-0.1, -0.17, 0.1],
-        // [0.1, -0.17, -0.1],
-        // [-0.1, -0.17, -0.1],
+    // hemisphereRadii: [1],
+    // terrestrial
+    // hemisphereRadii: [100, 50],
+    // airborn
+    // hemisphereRadii: [170],
+    // object model
+    // hemisphereRadii: [1],
+    imagesPerCombination: 150, // 110
+    // lasFile: "./data/pc/cropped_filtered_1.las",
+    lasFile: "./data/pc/bezigrad_normals.las",
+    targetPositionsAndRadii: [
+        // terrestrial
+        // {radii: 100, pos: [0, 5, 0]},
+        // {radii: 50, pos: [-20, 5, -10]},
+        // {radii: 50, pos: [20, 5, -10]},
+        // {radii: 50, pos: [-20, 5, 10]},
+        // {radii: 50, pos: [20, 5, 10]},
+        // {radii: 30, pos: [5, 5, -5]},
+        // {radii: 30, pos: [-8, 5, 2]},
+        // {radii: 30, pos: [0, 5, -9]},
+        // air borne
+        {radii: 170, pos: [0, 5, 0]},
+        {radii: 170, pos: [50, 5, 50]},
+        {radii: 170, pos: [-50, 5, 50]},
+        {radii: 170, pos: [50, 5, -50]},
+        {radii: 170, pos: [-50, 5, -50]},
+        // object model - lego 
+        // { radii: 3, pos: [0, 0.5, 0] },
+        // object model - truck 
+        // { radii: 10, pos: [0, 0.5, 0] },
+        // object model - statue 
+        // { radii: 4, pos: [0, 1, 0] },
+        // object model - barn 
+        // { radii: 20, pos: [0, 0, 0] },
     ]
 };
 
@@ -826,47 +843,42 @@ async function generateImagesParallel() {
         // Najprej generiramo vse pozicije kamer in naloge, preden začnemo z delom workerjev
         const allTasks = [];
         let imageIndex = 0;
+        // let count = 0;
 
-        for (const radius of CONFIG.hemisphereRadii) {
-            for (const target of CONFIG.targetPositions) {
-                const oversampledCount = Math.max(
-                    CONFIG.imagesPerCombination * 2,
-                    CONFIG.imagesPerCombination + 1
-                );
+        for (const { radii: radius, pos: target } of CONFIG.targetPositionsAndRadii) {
+            const oversampledCount = Math.max(
+                CONFIG.imagesPerCombination * 2,
+                CONFIG.imagesPerCombination + 1
+            );
+            // if (count === 5) {
+            //     break;
+            // }
+            // count++;
 
-                const poses = camPositionHelper.generateFibonacciHemisphereAroundCamera(
-                    oversampledCount,
+            const poses = camPositionHelper.generateFibonacciHemisphereAroundCamera(
+                oversampledCount,
+                radius,
+                target
+            );
+
+            const selectedPoses = poses.slice(0, CONFIG.imagesPerCombination);
+
+            console.log(
+                `Generated ${selectedPoses.length}/${CONFIG.imagesPerCombination} camera poses around target ${target} at radius ${radius}`
+            );
+
+            for (const pos of selectedPoses) {
+                allTasks.push({
+                    cameraPosition: pos,
+                    target: target,
+                    imageIndex: imageIndex++,
+                    targetPosition: target,
+                    useReconstruction: effectiveReconstruction,
+                    colorOrder,
                     radius,
-                    target
-                );
-
-                const selectedPoses = poses.slice(0, CONFIG.imagesPerCombination);
-
-                console.log(
-                    `Generated ${selectedPoses.length}/${CONFIG.imagesPerCombination} camera poses around target ${target} at radius ${radius}`
-                );
-
-                for (const pos of selectedPoses) {
-                    allTasks.push({
-                        cameraPosition: pos,
-                        target: target,
-                        imageIndex: imageIndex++,
-                        targetPosition: target,
-                        useReconstruction: effectiveReconstruction,
-                        colorOrder,
-                        radius,
-                        mode: currentMode,
-                        pointSize: currentPointSize,
-                    });
-                }
-
-                // Za prvi in drugi radij (zelo oddaljeni) generiramo slike le iz centra
-                if (radius === CONFIG.hemisphereRadii[0] || radius === CONFIG.hemisphereRadii[1]) {
-                    break;
-                } else if (target === CONFIG.targetPositions[0]) {
-                    continue;
-                }
-
+                    mode: currentMode,
+                    pointSize: currentPointSize,
+                });
             }
         }
 
@@ -1388,7 +1400,7 @@ function frame() {
         size: 16,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    const tp = CONFIG.targetPositions[0];
+    const tp = CONFIG.targetPositionsAndRadii[0].pos;
     device.queue.writeBuffer(targetPosBuf, 0, new Float32Array([tp[0], tp[1], tp[2], 0.0]));
 
     const commandEncoder = device.createCommandEncoder();
