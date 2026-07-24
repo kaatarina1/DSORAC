@@ -217,6 +217,7 @@ export class Solver {
 		this.updateRedBlackPipeline = await this.createUpdateRedBlackPipeline();
 		const omega = 1.9;
 
+		const fWasCreatedHere = !f;
 		if (!f) {
 			f = this.device.createTexture({
 				size: [this.width, this.height],
@@ -235,11 +236,10 @@ export class Solver {
 			addressModeV: 'clamp-to-edge',
 		});
 
-		const redBlackBuffer = this.device.createBuffer({
-			size: 4,
-			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-		});
-
+		// Barva (red/black) in ping-pong textur sta v koraku: color 0 vedno bere
+		// reconstructionRead in piše reconstructionWrite, color 1 obratno. Zato lahko
+		// vnaprej pripravimo natanko dva bind groupa z lastnima uniform bufferjema,
+		// namesto da bi ju ustvarjali (in GPU sinhronizirali) v vsaki iteraciji.
 		const omegaBuffer = this.device.createBuffer({
 			size: 4,
 			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -250,116 +250,71 @@ export class Solver {
 			new Float32Array([omega])
 		);
 
-		const capacity = 2;
-		const querySet = this.device.createQuerySet({
-			type: "timestamp",
-			count: capacity,
-		});
-		const queryBuffer = this.device.createBuffer({
-			size: 8 * capacity,
-			usage:
-				GPUBufferUsage.QUERY_RESOLVE |
-				GPUBufferUsage.STORAGE |
-				GPUBufferUsage.COPY_SRC |
-				GPUBufferUsage.COPY_DST,
-		});
-		const resultBuffer = this.device.createBuffer({
-			size: 8 * capacity,
-			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+		const colorBuffers = [0, 1].map((color) => {
+			const buf = this.device.createBuffer({
+				size: 4,
+				usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+			});
+			this.device.queue.writeBuffer(buf, 0, new Uint32Array([color]));
+			return buf;
 		});
 
-		let duration = 0;
-		for (let iteration = 0; iteration < this.maxIterations; iteration++) {
-			for (let color = 0; color < 2; color++) {
-				this.device.queue.writeBuffer(
-					redBlackBuffer,
-					0,
-					new Uint32Array([color % 2])
-				);
-
-				const commandEncoder = this.device.createCommandEncoder();
-
-				// SOR update pass
-				const updateBindGroup = this.device.createBindGroup({
-					layout: this.updateRedBlackPipeline.getBindGroupLayout(0),
-					entries: [
-						{ binding: 0, resource: captureTexture.createView() },
-						{
-							binding: 1,
-							resource: reconstructionRead.createView(),
-						},
-						{
-							binding: 2,
-							resource: reconstructionWrite.createView(),
-						},
-						{
-							binding: 3,
-							resource: f.createView(),
-						},
-						{
-							binding: 4,
-							resource: textureSampler,
-						},
-						{ binding: 5, resource: { buffer: redBlackBuffer } },
-						{ binding: 6, resource: { buffer: omegaBuffer } },
-					],
-				});
-
-				const updatePass = commandEncoder.beginComputePass({
-					timestampWrites: {
-						querySet,
-						beginningOfPassWriteIndex: 0,
-						endOfPassWriteIndex: 1,
+		const bindGroups = [0, 1].map((color) =>
+			this.device.createBindGroup({
+				layout: this.updateRedBlackPipeline.getBindGroupLayout(0),
+				entries: [
+					{ binding: 0, resource: captureTexture.createView() },
+					{
+						binding: 1,
+						resource: (color === 0
+							? reconstructionRead
+							: reconstructionWrite
+						).createView(),
 					},
-				});
-				updatePass.setPipeline(this.updateRedBlackPipeline);
-				updatePass.setBindGroup(0, updateBindGroup);
-				updatePass.dispatchWorkgroups(
-					Math.ceil(this.width / 8),
-					Math.ceil(this.height / 8)
-				);
-				updatePass.end();
+					{
+						binding: 2,
+						resource: (color === 0
+							? reconstructionWrite
+							: reconstructionRead
+						).createView(),
+					},
+					{
+						binding: 3,
+						resource: f.createView(),
+					},
+					{
+						binding: 4,
+						resource: textureSampler,
+					},
+					{ binding: 5, resource: { buffer: colorBuffers[color] } },
+					{ binding: 6, resource: { buffer: omegaBuffer } },
+				],
+			})
+		);
 
-				commandEncoder.resolveQuerySet(
-					querySet,
-					0,
-					capacity,
-					queryBuffer,
-					0
-				);
+		// Iteracije oddajamo v večjih paketih brez čakanja na CPU — brez
+		// mapAsync/submit na vsako iteracijo, kar je bilo glavno ozko grlo.
+		const iterationsPerSubmit = 100;
+		for (let start = 0; start < this.maxIterations; start += iterationsPerSubmit) {
+			const end = Math.min(start + iterationsPerSubmit, this.maxIterations);
+			const commandEncoder = this.device.createCommandEncoder();
+			const updatePass = commandEncoder.beginComputePass();
+			updatePass.setPipeline(this.updateRedBlackPipeline);
 
-				commandEncoder.copyBufferToBuffer(
-					queryBuffer,
-					0,
-					resultBuffer,
-					0,
-					8 * capacity
-				);
-
-				this.device.queue.submit([commandEncoder.finish()]);
-
-				await resultBuffer.mapAsync(GPUMapMode.READ);
-				const timestamps = new BigUint64Array(
-					resultBuffer.getMappedRange()
-				);
-				const durationNs = Number(
-					timestamps[capacity - 2] - timestamps[0]
-				);
-				const durationMs = durationNs / 1_000_000;
-				duration += durationMs;
-				resultBuffer.unmap();
-
-				[reconstructionRead, reconstructionWrite] = [
-					reconstructionWrite,
-					reconstructionRead,
-				];
+			for (let iteration = start; iteration < end; iteration++) {
+				for (let color = 0; color < 2; color++) {
+					updatePass.setBindGroup(0, bindGroups[color]);
+					updatePass.dispatchWorkgroups(
+						Math.ceil(this.width / 8),
+						Math.ceil(this.height / 8)
+					);
+				}
 			}
 
-			// Optional: Add progress logging
-			// if (iteration % 1000 === 0) {
-			// 	console.log(`Completed ${iteration} iterations`);
-			// }
+			updatePass.end();
+			this.device.queue.submit([commandEncoder.finish()]);
 		}
+		// Po polni iteraciji (red + black) je rezultat vedno nazaj v reconstructionRead.
 
 		const outputBuffer = this.device.createBuffer({
 			size: this.width * this.height * 16,
@@ -404,8 +359,14 @@ export class Solver {
 
 		outputBuffer.unmap();
 
-		// console.log("SOR time: ", duration);
-		// console.log("SOR average time per iteration", duration / this.maxIterations);
+		outputBuffer.destroy();
+		omegaBuffer.destroy();
+		for (const buf of colorBuffers) {
+			buf.destroy();
+		}
+		if (fWasCreatedHere) {
+			f.destroy();
+		}
 
 		return resultImage;
 	}
