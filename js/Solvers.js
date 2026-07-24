@@ -292,8 +292,7 @@ export class Solver {
 			})
 		);
 
-		// Iteracije oddajamo v večjih paketih brez čakanja na CPU — brez
-		// mapAsync/submit na vsako iteracijo, kar je bilo glavno ozko grlo.
+		// Iteracije oddajamo v večjih paketih brez čakanja na CPU
 		const iterationsPerSubmit = 100;
 		for (let start = 0; start < this.maxIterations; start += iterationsPerSubmit) {
 			const end = Math.min(start + iterationsPerSubmit, this.maxIterations);
