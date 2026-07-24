@@ -4,7 +4,7 @@ import laspy
 import struct
 import io
 
-name = "room"
+name = "cropped_filtered_1"
 # Potrebno, da zagotovimo pravilno izvaja tudi če ima LAS datoteka že obstoječe (a napačne/duplikatne) 
 # VLR-je z ekstra dimenzijami, ki bi lahko motili naš izračun normal. 
 # Ta funkcija prebere surove bajte LAS datoteke, identificira in odstrani vse VLR-je z ekstra dimenzijami, 
@@ -184,10 +184,10 @@ out.ny    = normals[:, 1].astype(np.float32)
 out.nz    = normals[:, 2].astype(np.float32)
 out.classification = las.classification
 
-out.write(name + "_normals.las")
+out.write("./pc/" + name + "_normals.las")
 print("Saved → " + name + "_normals.las")
 
-las = laspy.read(name + "_normals.las")
+las = laspy.read("./pc/" +  name + "_normals.las")
 
 print(las.point_format)
 print(las.point_format.dimension_names)
