@@ -131,11 +131,19 @@ async function initializeWorker(config) {
         console.log('🔧 Worker initializing GPU...');
         const adapter = await navigator.gpu.requestAdapter();
         const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
-        
+
+        // Nekateri oblaki točk (npr. ljubljana_2/3) imajo dovolj točk, da depthStorageBuffer
+        // v DepthMap (nPoints * 4 bajtov, brez chunkanja) preseže privzeti
+        // maxStorageBufferBindingSize (128 MB) in povzroči izgubo GPU naprave.
+        // Zahtevamo najvišjo limito, ki jo adapter podpira.
         device = await adapter?.requestDevice({
-            requiredFeatures: hasBGRA8unormStorage 
-                ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable", "timestamp-query"] 
+            requiredFeatures: hasBGRA8unormStorage
+                ? ["bgra8unorm-storage", "float32-filterable", "float32-blendable", "timestamp-query"]
                 : ["float32-filterable", "float32-blendable", "timestamp-query"],
+            requiredLimits: {
+                maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+                maxBufferSize: adapter.limits.maxBufferSize,
+            },
         });
 
         // Spremljamo izgubo GPU

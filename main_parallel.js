@@ -793,8 +793,17 @@ async function generateImagesParallel() {
     // Reconstruction (depth binning + SOR solver) is only meaningful for POINTS mode.
     // Quad modes (DISKS, BILLBOARDS, GAUSSIANS) always do a direct capture.
     const effectiveReconstruction = useReconstruction && currentMode === "POINTS";
-    const useParallelBatching = effectiveReconstruction; 
-    const activeWorkerCount = useParallelBatching ? CONFIG.workerCount : 1;
+    const useParallelBatching = effectiveReconstruction;
+    // Vsak worker naloži svojo lastno kopijo celotnega oblaka točk na GPU.
+    // Pri zelo velikih oblakih (npr. ljubljana_2/3) bi preveč vzporednih workerjev
+    // skupaj zahtevalo preveliko količino VRAM samo za naložit točke točke, kar povzroči izgubo GPU naprave.
+    // Omejimo število workerjev tako, da skupna poraba pomnilnika za točke ostane pod budgetom.
+    const pointBufferBudgetBytes = 4 * 1024 ** 3; // 4 GB, konzervativna privzeta vrednost
+    const bytesPerWorker = numberOfAllPoints * pointByteSize;
+    const memorySafeWorkerCount = Math.max(1, Math.floor(pointBufferBudgetBytes / bytesPerWorker));
+    const activeWorkerCount = useParallelBatching
+        ? Math.min(CONFIG.workerCount, memorySafeWorkerCount)
+        : 1;
     const activeBatchSize = useParallelBatching ? CONFIG.batchSize : Number.MAX_SAFE_INTEGER;
     const colorOrder = effectiveReconstruction || currentMode === "BILLBOARDS" || currentMode === "GAUSSIANS"
         ? CONFIG.reconstructionColorOrder
@@ -805,6 +814,13 @@ async function generateImagesParallel() {
     );
     console.log(`Capture mode: ${effectiveReconstruction ? "reconstruction" : "point cloud only"} (mode=${currentMode})`);
     console.log(`Output color order: ${colorOrder.toUpperCase()}`);
+    if (useParallelBatching && activeWorkerCount < CONFIG.workerCount) {
+        console.log(
+            `⚠️ Reduced worker count from ${CONFIG.workerCount} to ${activeWorkerCount} ` +
+            `to fit point buffers (${numberOfAllPoints.toLocaleString()} points, ` +
+            `~${(bytesPerWorker / 1024 ** 3).toFixed(2)} GB/worker) within the VRAM budget`
+        );
+    }
 
     try {
         // Najprej generiramo vse pozicije kamer in naloge, preden začnemo z delom workerjev
