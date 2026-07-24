@@ -471,9 +471,9 @@ async function generateImage(params) {
         const effectiveReconstruction = useReconstruction && mode === "POINTS";
 
         if (effectiveReconstruction) {
-            await renderFullScene(projectionViewMatrix, viewMatrix, depthTexture, targetPosition);
+            // await renderFullScene(projectionViewMatrix, viewMatrix, depthTexture, targetPosition);
 
-            const depthMap = new DepthMap(canvas, device, depthTexture);
+            const depthMap = new DepthMap(canvas, device, viewMatrix, projectionViewMatrix, pointclouds);
             let depthBins;
             
             try {
@@ -484,6 +484,8 @@ async function generateImage(params) {
                 depthBins.reverse();
             } catch (error) {
                 depthBins = [[0, 0.3], [0.3, 0.6], [0.6, 1.0]];
+            } finally {
+                depthMap.destroy();
             }
 
             self.postMessage({

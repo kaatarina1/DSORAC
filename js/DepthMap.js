@@ -1,41 +1,43 @@
 export class DepthMap {
-	constructor(canvas, device, depthTexture) {
+	constructor(canvas, device, viewMatrix, projectionViewMatrix, pointclouds) {
 		this.canvas = canvas;
 		this.device = device;
-		this.width = canvas.width;
-		this.height = canvas.height;
-		this.depthTexture = depthTexture;
+		this.viewMatrix = viewMatrix;
+		this.projectionViewMatrix = projectionViewMatrix;
+		this.pointclouds = pointclouds;
+		// Skupno število točk čez vse chunk-e (vsak chunk ima svoj GPU buffer)
+		this.nPoints = pointclouds.reduce((sum, pc) => sum + pc.numberOfPoints, 0);
 
 		this.depthStorageBuffer = this.device.createBuffer({
-			size: this.width * this.height * 4,
+			size: this.nPoints * 4,
 			usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
 		});
 
 		this.readbackBuffer = this.device.createBuffer({
-			size: this.width * this.height * 4,
+			size: this.nPoints * 4,
 			usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
 		});
 
-		this.computeShader = device.createShaderModule({
-			code: `
-              @group(0) @binding(0) var depthTexture: texture_depth_2d;
-              @group(0) @binding(1) var<storage, read_write> outputDepths: array<f32>;
-              
-              @compute @workgroup_size(16, 16)
-              fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-                let dimensions = textureDimensions(depthTexture);
-                if (global_id.x >= dimensions.x || global_id.y >= dimensions.y) {
-                  return;
-                }
-                
-                let texCoord = vec2i(global_id.xy);
-                let depth = textureLoad(depthTexture, texCoord, 0);
-                
-                let index = global_id.y * dimensions.x + global_id.x;
-                outputDepths[index] = depth;
-              }
-            `,
+		// Matriki prideta kot navadni tabeli, zato ju zapišemo v uniform buffer-ja
+		this.projMatrixBuffer = this.device.createBuffer({
+			size: 64,
+			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 		});
+		this.device.queue.writeBuffer(this.projMatrixBuffer, 0, new Float32Array(projectionViewMatrix));
+
+		this.viewMatrixBuffer = this.device.createBuffer({
+			size: 64,
+			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+		});
+		this.device.queue.writeBuffer(this.viewMatrixBuffer, 0, new Float32Array(viewMatrix));
+	}
+
+	// Shader naložimo asinhrono ob prvi uporabi (v konstruktorju await ni dovoljen)
+	async initPipeline() {
+		if (this.computePipeline) return;
+
+		const computeCode = await fetch("./shaders/visiblePointDepth.wgsl").then(r => r.text());
+		this.computeShader = this.device.createShaderModule({ code: computeCode });
 
 		this.computePipeline = this.device.createComputePipeline({
 			layout: "auto",
@@ -45,38 +47,57 @@ export class DepthMap {
 			},
 		});
 
-		this.computeBindGroup = this.device.createBindGroup({
-			layout: this.computePipeline.getBindGroupLayout(0),
+		this.matrixBindGroup = this.device.createBindGroup({
+			layout: this.computePipeline.getBindGroupLayout(1),
 			entries: [
-				{
-					binding: 0,
-					resource: this.depthTexture.createView({
-						format: "depth32float", 
-						aspect: "depth-only", 
-					}),
-				},
-				{
-					binding: 1,
-					resource: {
-						buffer: this.depthStorageBuffer,
-					},
-				},
+				{ binding: 0, resource: { buffer: this.projMatrixBuffer } },
+				{ binding: 1, resource: { buffer: this.viewMatrixBuffer } },
 			],
 		});
+
+		// Za vsak chunk pripravimo bind group s [count, offset] uniform-om,
+		// da vsi chunk-i pišejo v skupni depthStorageBuffer brez prekrivanja.
+		this.chunkBindGroups = [];
+		this.paramsBuffers = [];
+		let offset = 0;
+		for (const pc of this.pointclouds) {
+			const paramsBuf = this.device.createBuffer({
+				size: 8,
+				usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+			});
+			this.device.queue.writeBuffer(paramsBuf, 0, new Uint32Array([pc.numberOfPoints, offset]));
+			this.paramsBuffers.push(paramsBuf);
+
+			this.chunkBindGroups.push({
+				count: pc.numberOfPoints,
+				bindGroup: this.device.createBindGroup({
+					layout: this.computePipeline.getBindGroupLayout(0),
+					entries: [
+						{ binding: 0, resource: { buffer: pc.pointBuffer } },
+						{ binding: 1, resource: { buffer: paramsBuf } },
+						{ binding: 2, resource: { buffer: this.depthStorageBuffer } },
+					],
+				}),
+			});
+			offset += pc.numberOfPoints;
+		}
 	}
 
-	// Funkcija za ekstrakcijo globinskih vrednosti iz depth texture in grupiranje v bin-e.
+	// Izračuna linearno view-space globino za vsako točko; točke izven pogleda dobijo -1.
 	async extractDepthValues() {
+		await this.initPipeline();
+
 		const commandEncoder = this.device.createCommandEncoder();
 
 		const computePass = commandEncoder.beginComputePass();
 		computePass.setPipeline(this.computePipeline);
-		computePass.setBindGroup(0, this.computeBindGroup);
+		computePass.setBindGroup(1, this.matrixBindGroup);
 
-		const workgroupCountX = Math.ceil(this.width / 16);
-		const workgroupCountY = Math.ceil(this.height / 16);
-
-		computePass.dispatchWorkgroups(workgroupCountX, workgroupCountY);
+		const workgroupSize = 256;
+		for (const chunk of this.chunkBindGroups) {
+			computePass.setBindGroup(0, chunk.bindGroup);
+			computePass.dispatchWorkgroups(Math.ceil(chunk.count / workgroupSize));
+		}
 		computePass.end();
 
 		commandEncoder.copyBufferToBuffer(
@@ -84,7 +105,7 @@ export class DepthMap {
 			0,
 			this.readbackBuffer,
 			0,
-			this.width * this.height * 4
+			this.nPoints * 4
 		);
 
 		this.device.queue.submit([commandEncoder.finish()]);
@@ -107,27 +128,21 @@ export class DepthMap {
 		numBins = 12, // Število ciljanih binov (globinskih rezin)
 		near = 0.05, // Near ravnina (mora biti usklajena s tisto, ki jo shader uporablja za renderiranje)
 		far = 5.0, // Far ravnina (mora biti usklajena s tisto, ki jo shader uporablja za renderiranje)
-		minPointsFraction = 0.01, // Minimalni delež točk v binu, preden se združi
+		minPointsFraction = 0.1, // Minimalni delež točk v binu, preden se združi
 		minBinWidth = 0.002, // Minimalna širina bin-a v linearni razdalji
 	} = {}) {
 		const depthValues = await this.extractDepthValues();
 
-		// Lineariziraj globinske vrednosti iz NDC v linearne enote pogleda
-		const linearize = (d) => {
-			const z_ndc = d * 2.0 - 1.0;
-			return (2.0 * near * far) / (far + near - z_ndc * (far - near));
-		};
-
+		// Globine so že linearne (view-space), točke izven pogleda imajo -1.
 		const linear = [];
+		let minDepth = Infinity;
+		let maxDepth = -Infinity;
 		for (let i = 0; i < depthValues.length; i++) {
 			const d = depthValues[i];
-			// Zavrnemo vrednosti, ki so točno 1.0 (neveljavno/ nebo) ali 0.0 (morda ekstremno blizu, lahko tudi artefakti), 
-			// ter tiste, ki so izven uporabnega razpona.
-			if (d > 0.0 && d < 0.999) {
-				const lv = linearize(d);
-				if (Number.isFinite(lv) && lv > 0) {
-					linear.push(lv);
-				}
+			if (d > 0 && Number.isFinite(d) && d >= near && d <= far) {
+				linear.push(d);
+				if (d < minDepth) minDepth = d;
+				if (d > maxDepth) maxDepth = d;
 			}
 		}
 
@@ -136,44 +151,49 @@ export class DepthMap {
 			return [[near, far]];
 		}
 
-		// Sortiraj linearne globinske vrednosti, da lahko zgradimo kvantilne bin-e.
-		linear.sort((a, b) => a - b);
+		const actualNear = Math.max(near, minDepth * 0.95);
+		const actualFar  = Math.min(far,  maxDepth * 1.05);
+		const range = actualFar - actualNear;
 
 		const totalPoints = linear.length;
 		const minPointsPerBin = Math.max(1, Math.floor(totalPoints * minPointsFraction));
 
-		//Ustvari surove bin-e na osnovi kvantilov, 
-		// da zagotovimo približno enako število točk v vsakem binu, ne glede na razdaljo.
-		let rawBins = [];
-		for (let i = 0; i < numBins; i++) {
-			const startIdx = Math.floor((i / numBins) * totalPoints);
-			const endIdx = Math.min(
-				Math.floor(((i + 1) / numBins) * totalPoints) - 1,
-				totalPoints - 1
-			);
-			const start = linear[startIdx];
-			const end = linear[endIdx];
-			rawBins.push({
-				start,
-				end,
-				count: endIdx - startIdx + 1,
-			});
+		//const range = far - near;
+		const resolution = 500;
+		const histogram = new Float32Array(resolution);
+
+		for (const d of linear) {
+			const idx = Math.floor(((d - actualNear) / range) * (resolution - 1));
+			if (idx >= 0 && idx < resolution) histogram[idx]++;
 		}
 
-		// Ydružimo surove bin-e, ki imajo premalo točk ali so preozki, da zagotovimo stabilnost rekonstrukcije.
-		let merged = [rawBins[0]];
-		for (let i = 1; i < rawBins.length; i++) {
-			const prev = merged[merged.length - 1];
-			const cur = rawBins[i];
-			const width = cur.end - cur.start;
-			if (width < minBinWidth || cur.count < minPointsPerBin) {
-				prev.end = cur.end;
-				prev.count += cur.count;
-			} else {
-				merged.push(cur);
+		// Smooth
+		const smoothed = new Float32Array(resolution);
+		const smoothRadius = 8;
+		for (let i = 0; i < resolution; i++) {
+			let sum = 0, count = 0;
+			for (let j = Math.max(0, i - smoothRadius); j < Math.min(resolution, i + smoothRadius); j++) {
+				sum += histogram[j]; count++;
+			}
+			smoothed[i] = sum / count;
+		}
+
+		// Find peaks
+		const peaks = [];
+		for (let i = 1; i < resolution - 1; i++) {
+			if (smoothed[i] > smoothed[i-1] && smoothed[i] > smoothed[i+1]) {
+				peaks.push({ depth: actualNear + (i / resolution) * range, density: smoothed[i] });
 			}
 		}
+		peaks.sort((a, b) => b.density - a.density);
+		const topPeaks = peaks.slice(0, numBins).sort((a, b) => a.depth - b.depth);
 
+		// Voronoi boundaries
+		const merged = topPeaks.map((p, i) => ({
+			start: i === 0 ? near : (topPeaks[i-1].depth + p.depth) / 2,
+			end: i === topPeaks.length - 1 ? far : (p.depth + topPeaks[i+1].depth) / 2,
+			count: Math.round(p.density)
+		}));
 
 		// Razširimo prvega/ zadnjega bina na celoten near/far razpon, da nobena točka ne pade izven pokritosti.
 		const bins = merged.map((b, i) => {
@@ -193,7 +213,7 @@ export class DepthMap {
 			const mid = (bins[i - 1][1] + bins[i][0]) / 2;
 			const binWidth = bins[i][1] - bins[i][0];
 			const prevBinWidth = bins[i - 1][1] - bins[i - 1][0];
-			const overlap = Math.min(binWidth, prevBinWidth) * 0.15;
+			const overlap = Math.min(binWidth, prevBinWidth) * 0.1;
 			bins[i - 1][1] = mid + overlap;
 			bins[i][0] = mid - overlap;
 		}
@@ -204,5 +224,22 @@ export class DepthMap {
 		);
 
 		return bins;
+	}
+
+	// Sprosti vse GPU buffer-je te instance (klic po getDepthBins/groupDepthIntoBins,
+	// sicer vsaka slika pusti ~2 × nPoints × 4 bajtov GPU pomnilnika).
+	destroy() {
+		this.depthStorageBuffer.destroy();
+		this.readbackBuffer.destroy();
+		this.projMatrixBuffer.destroy();
+		this.viewMatrixBuffer.destroy();
+		if (this.paramsBuffers) {
+			for (const buf of this.paramsBuffers) {
+				buf.destroy();
+			}
+			this.paramsBuffers = [];
+		}
+		this.chunkBindGroups = [];
+		this.matrixBindGroup = null;
 	}
 }
