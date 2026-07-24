@@ -208,36 +208,29 @@ export class CameraPosition {
 		return lines.join("\n");
 	}
 
+	// Vrne Blob namesto enega dolgega niza, ker pri milijonih
+	// točk .join() na enem samem nizu porabi ogromno pomnilnika.
 	writePoints3DTxt(positions, colors, scaleFactor = 1.0) {
-		const points = [];
 		const totalPoints = positions.length / 3;
 		const samplingRate = 100; // Vyorčimo vsak 5. point 
 		
 		console.log(`Writing points3D.txt with scale factor: ${scaleFactor}, sampling rate: ${samplingRate} (from ${totalPoints} points)`);
-		
+
+		const lines = ["# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n"];
+		let id = 0;
 		for (let pointIndex = 0; pointIndex < totalPoints; pointIndex += samplingRate) {
 			const i = pointIndex * 3;
-			points.push({
-				x: positions[i],
-				y: positions[i + 1],
-				z: positions[i + 2],
-				r: Math.round(colors[i] * 255),
-				g: Math.round(colors[i + 1] * 255),
-				b: Math.round(colors[i + 2] * 255),
-			});
+			const r = Math.round(colors[i] * 255);
+			const g = Math.round(colors[i + 1] * 255);
+			const b = Math.round(colors[i + 2] * 255);
+			lines.push(
+				`${id++} ${positions[i]} ${positions[i + 1]} ${positions[i + 2]} ${r} ${g} ${b} 0\n`
+			);
 		}
-		
-		console.log(`Wrote ${points.length} sampled points to points3D.txt`);
-		
-		return (
-			`# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[]\n` +
-			points
-				.map(
-					(p, i) =>
-						`${i} ${p.x} ${p.y} ${p.z} ${p.r} ${p.g} ${p.b} 0`
-				)
-				.join("\n")
-		);
+
+		console.log(`Wrote ${id} sampled points to points3D.txt`);
+
+		return new Blob(lines, { type: "text/plain" });
 	}
 
 	computeOrthoTopDownMatrix(eyeY, panX, panZ, zoom, canvas, bbMin, bbMax) {
