@@ -6,7 +6,7 @@ const MODE_META = {
 };
 
 export class RenderingControls {
-    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onColorModeChange, onMasksLoaded, onDownloadLas }) {
+    constructor({ modes, currentMode, currentPointSize, onModeChange, onSizeChange, useReconstruction = true, onReconstructionChange, onOrthoChange, onColorModeChange, onMasksLoaded, onDownloadLas, onConfigLoaded }) {
         this.modes            = modes;
         this.currentMode      = currentMode;
         this.currentPointSize = currentPointSize;
@@ -18,6 +18,7 @@ export class RenderingControls {
         this.onColorModeChange  = onColorModeChange;
         this.onMasksLoaded      = onMasksLoaded;
         this.onDownloadLas      = onDownloadLas;
+        this.onConfigLoaded     = onConfigLoaded;
         this.orthoMode          = false;
         this.colorMode          = 0; // 0=RGB, 1=segmentation classes, 2=LAS classes
         this.votingMode         = 'simple';
@@ -29,6 +30,7 @@ export class RenderingControls {
         this._lasClassBtn     = null;
         this._segStatusEl     = null;
         this._downloadBtn     = null;
+        this._evalStatusEl     = null;
     }
 
     mount(container) {
@@ -236,6 +238,32 @@ export class RenderingControls {
         this._downloadBtn.addEventListener("click", () => { if (this.onDownloadLas) this.onDownloadLas(); });
         panel.appendChild(this._downloadBtn);
 
+        const divEval = document.createElement("div");
+        divEval.className = "rc-divider";
+        panel.appendChild(divEval);
+
+        const evalLabel = document.createElement("div");
+        evalLabel.style.cssText = "font-size:10px;letter-spacing:2px;text-transform:uppercase;color:#667;font-weight:700;margin-bottom:8px;";
+        evalLabel.textContent = "Evaluation";
+        panel.appendChild(evalLabel);
+
+        const jsonInput = document.createElement("input");
+        jsonInput.type = "file"; jsonInput.accept = ".json"; jsonInput.style.display = "none";
+        jsonInput.addEventListener("change", () => {
+            if (jsonInput.files[0] && this.onConfigLoaded) this.onConfigLoaded(jsonInput.files[0]);
+        });
+        panel.appendChild(jsonInput);
+
+        const evalBtn = document.createElement("button");
+        evalBtn.className = "rc-ortho-btn";
+        evalBtn.innerHTML = `<span>📝</span> Upload evaluation confih file (JSON)`;
+        evalBtn.addEventListener("click", () => jsonInput.click());
+        panel.appendChild(evalBtn);
+
+        this._evalStatusEl = document.createElement("div");
+        this._evalStatusEl.style.cssText = "font-size:11px;color:#667;margin-top:8px;min-height:16px;";
+        panel.appendChild(this._evalStatusEl);
+
         return panel;
     }
 
@@ -296,8 +324,8 @@ export class RenderingControls {
 
     }
 
-    _sliderToSize(v) { return 0.02 + (v / 1000) * 0.9; }
-    _sizeToSlider(s) { return Math.round((s - 0.1) / 0.9 * 1000); }
+    _sliderToSize(v) { return 0.001 + (v / 1000) * 0.9; }
+    _sizeToSlider(s) { return Math.round((s - 0.001) / 0.9 * 1000); }
     _fmt(s)          { return s < 0.01 ? s.toExponential(2) : s.toFixed(4); }
 
     _injectStyles() {

@@ -13,10 +13,11 @@ struct SceneParams {
     targetPosition: vec4f,
     cameraPos:      vec4f,
     pointSize:      f32,
-    _pad1: f32,
-    _pad2: f32,
-    _pad3: f32,
+    isOrtho: f32, // isOrtho
+    isSpherical: f32, // isSpherical
+    far: f32, // far
 }
+const PI: f32 = 3.14159265359;
 
 @group(0) @binding(0) var<storage, read> points: array<Point>;
 @group(0) @binding(1) var<uniform> useClassColors: u32;
@@ -70,10 +71,30 @@ fn vertex(@builtin(vertex_index) vid: u32) -> VertexOutput {
     let viewPos = viewMatrix * vec4f((*point).position, 1.0);
     let linearDepth = -viewPos.z;
 
-    if (linearDepth < depthRange.x || linearDepth > depthRange.y) {
-        output.clipPosition = vec4f(0.0, 0.0, 2.0, 0.0);
+    if (scene.isSpherical > 0.5) {
+        let viewPosOffset = viewMatrix * vec4f(worldPos, 1.0);
+        let distCenter = length(viewPos.xyz);
+        let dist = length(viewPosOffset.xyz);
+        if (dist > scene.far) {
+            output.clipPosition = vec4f(0.0, 0.0, 2.0, 0.0);
+        } else {
+            let dirCenter = viewPos.xyz / max(distCenter, 1e-6); // Normalize 
+            let lonCenter = atan2(dirCenter.x, -dirCenter.z);
+            let dir = viewPosOffset.xyz / max(dist, 1e-6);
+            var lon = atan2(dir.x, -dir.z);
+            let diff = lon - lonCenter;
+            let wrapped = diff - 2.0 * PI * round(diff / (2.0 * PI));
+            lon = lonCenter + wrapped;
+            let lat = asin(clamp(dir.y, -1.0, 1.0));
+            output.clipPosition = vec4f(lon / PI, lat / (PI * 0.5), clamp(dist / max(scene.far, 1e-6), 0.0, 1.0), 1.0);
+        }
     } else {
-        output.clipPosition = matrix * vec4f(worldPos, 1.0);
+        // Discard points outside the selected linear depth range
+        if (linearDepth < depthRange.x || linearDepth > depthRange.y) {
+            output.clipPosition = vec4f(0.0, 0.0, 2.0, 0.0); // Move outside clip space
+        } else {
+            output.clipPosition = matrix * vec4f(worldPos, 1.0);
+        }
     }
 
     output.uv = uv;

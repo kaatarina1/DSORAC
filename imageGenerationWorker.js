@@ -34,15 +34,19 @@ async function getBlobWorkerSafe(data, width, height, colorOrder = "bgr") {
     let maxVal = 0;
     let minVal = Infinity;
     let nonZeroCount = 0;
-    
+
     for (let i = 0; i < data.length; i++) {
         const val = data[i];
         if (val !== 0) nonZeroCount++;
         maxVal = Math.max(maxVal, val);
         minVal = Math.min(minVal, val);
     }
-    
+
     console.log(`📊 Image data: min=${minVal.toFixed(4)}, max=${maxVal.toFixed(4)}, nonZero=${nonZeroCount}/${data.length}`);
+
+    if (maxVal === 0) {
+        console.error('❌ WARNING: Output data is all zeros!');
+    }
     
     if (maxVal === 0) {
         console.error('❌ WARNING: Output data is all zeros!');
@@ -236,8 +240,8 @@ async function initializeWorker(config) {
         });
         device.queue.writeBuffer(useClassColorsBuffer, 0, new Uint32Array([0]));
 
-        console.log("🔧 Worker loading point cloud...");
-        const lasLoader = new LasLoader("./data/pc/room_normals.las");
+        console.log(`🔧 Worker loading point cloud from ${config.lasFile}...`);
+        const lasLoader = new LasLoader(config.lasFile);
         const lasData = await lasLoader.loadLasData();
 
         console.log(`📊 Worker loaded ${lasData.positions.length / 3} points`);
@@ -368,12 +372,13 @@ function createDepthRangeBindGroup(minDepth, maxDepth, pipeline = null) {
     };
 }
 
-function createTargetPositionBindGroup(pos, pipeline) {
+function createTargetPositionBindGroup(pos, pipeline, isSpherical = false, far = 0) {
+    // RenderParams (shaders/rendering.wgsl) je targetPosition:vec4f + isSpherical:f32 + far:f32 + 2x pad = 32 bajtov
     const buf = device.createBuffer({
-        size: 16,
+        size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(buf, 0, new Float32Array([pos[0], pos[1], pos[2], 0.0]));
+    device.queue.writeBuffer(buf, 0, new Float32Array([pos[0], pos[1], pos[2], 0.0, isSpherical ? 1 : 0, far, 0, 0]));
     return {
         buffer: buf,
         bindGroup: device.createBindGroup({
@@ -383,7 +388,7 @@ function createTargetPositionBindGroup(pos, pipeline) {
     };
 }
 
-function createScreenParamsBindGroup(targetPosition, cameraPosition, pointSize, pipeline) {
+function createScreenParamsBindGroup(targetPosition, cameraPosition, pointSize, pipeline, isOrtho, isSpherical, far) {
     // SceneParams buffer
     const sceneParamsBuffer = device.createBuffer({
         size: 48,
@@ -393,7 +398,7 @@ function createScreenParamsBindGroup(targetPosition, cameraPosition, pointSize, 
     const sceneData = new Float32Array(12);
     sceneData[0] = targetPosition[0]; sceneData[1] = targetPosition[1]; sceneData[2] = targetPosition[2]; sceneData[3] = 0;
     sceneData[4] = cameraPosition[0]; sceneData[5] = cameraPosition[1]; sceneData[6] = cameraPosition[2]; sceneData[7] = 0;
-    sceneData[8] = pointSize; sceneData[9] = 0; sceneData[10] = 0; sceneData[11] = 0;
+    sceneData[8] = pointSize; sceneData[9] = isOrtho ? 1 : 0; sceneData[10] = isSpherical ? 1 : 0; sceneData[11] = far ?? 0;
     device.queue.writeBuffer(sceneParamsBuffer, 0, sceneData);
 
 
@@ -446,6 +451,7 @@ async function generateImage(params) {
             colorOrder = "bgr",
             mode = "POINTS",
             pointSize = 0.01,
+            fovDeg = 45,
         } = params;
 
         let pipeline;
@@ -464,8 +470,20 @@ async function generateImage(params) {
         await device.queue.onSubmittedWorkDone();
 
         // Izračunamo view in projection matriki
-        let { viewMatrix, projectionViewMatrix, near, far } =
-            camPositionHelper.computeCameraMatrix(cameraPosition, target, canvas, bbMin, bbMax);
+        let viewMatrix, projectionViewMatrix, near, far, cameraDirOrPosition = cameraPosition, isOrtho = false, isSpherical = false;
+
+        if (params.projection === "ORTHOGRAPHIC") {
+            isOrtho = true;
+            ({ viewMatrix, projectionViewMatrix, near, far } = camPositionHelper.computeOrthoTopDownMatrix(params.eyeY, params.panX, params.panZ, params.zoom, canvas, bbMin, bbMax));
+            cameraDirOrPosition = mat4.normalize([0, 1, 0]); // top-down
+        } else if (params.projection === "SPHERICAL") {
+            isSpherical = true;
+            ({ viewMatrix, far } = camPositionHelper.computeSphericalCameraMatrix(cameraPosition, bbMin, bbMax, params.yawDeg));
+            projectionViewMatrix = mat4.identity();
+            near = 0.01;
+        } else {
+            ({ viewMatrix, projectionViewMatrix, near, far } = camPositionHelper.computeCameraMatrix(cameraPosition, target, canvas, bbMin, bbMax, fovDeg));
+        }
 
         const depthTexture = device.createTexture({
             size: [canvas.width, canvas.height],
@@ -481,7 +499,7 @@ async function generateImage(params) {
         if (effectiveReconstruction) {
             // await renderFullScene(projectionViewMatrix, viewMatrix, depthTexture, targetPosition);
 
-            const depthMap = new DepthMap(canvas, device, viewMatrix, projectionViewMatrix, pointclouds);
+            const depthMap = new DepthMap(canvas, device, viewMatrix, projectionViewMatrix, pointclouds, isSpherical);
             let depthBins;
             
             try {
@@ -511,7 +529,7 @@ async function generateImage(params) {
             composer.sdfs = [];
             composer.depthPoints = [];
             composer.depths = [];
-            
+
             console.log(`🎨 Starting composition with ${depthBins.length} depth bins`);
 
             for (let i = 0; i < depthBins.length; i++) {
@@ -519,7 +537,7 @@ async function generateImage(params) {
                 await renderPointsInDepthRange(
                     minDepth, maxDepth, near, far,
                     projectionViewMatrix, viewMatrix, depthTexture, composer,
-                    targetPosition
+                    targetPosition, isSpherical
                 );
                 
                 console.log(`✓ Layer ${i + 1}/${depthBins.length} added. Composer now has ${composer.reconstructions.length} layers`);
@@ -548,7 +566,7 @@ async function generateImage(params) {
                 imageIndex,
                 message: 'Capturing raw point cloud (reconstruction disabled)'
             });
-            outputData = await capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraPosition, pointSize, mode);
+            outputData = await capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraDirOrPosition, pointSize, mode, isOrtho, isSpherical, far);
         }
 
         const blob = await getBlobWorkerSafe(outputData, canvas.width, canvas.height, colorOrder);
@@ -649,7 +667,7 @@ async function renderFullScene(projectionViewMatrix, viewMatrix, depthTexture, t
 async function renderPointsInDepthRange(
     minDepth, maxDepth, near, far,
     projectionViewMatrix, viewMatrix, depthTexture, composer,
-    targetPosition
+    targetPosition, isSpherical = false
 ) {
     const { bindGroup: matricesBG, mvpBuffer: mvpBuf, viewBuffer: viewBuf } =
         createMatricesBindGroup(projectionViewMatrix, viewMatrix, renderingPipeline);
@@ -658,7 +676,7 @@ async function renderPointsInDepthRange(
         createDepthRangeBindGroup(minDepth, maxDepth, renderingPipeline);
 
     const { bindGroup: targetBG, buffer: tBuf } =
-        createTargetPositionBindGroup(targetPosition, renderingPipeline);
+        createTargetPositionBindGroup(targetPosition, renderingPipeline, isSpherical, far);
 
     const captureTexture = device.createTexture({
         size: [canvas.width, canvas.height],
@@ -697,7 +715,7 @@ async function renderPointsInDepthRange(
 
     renderPass.end();
     device.queue.submit([commandEncoder.finish()]);
-    await device.queue.onSubmittedWorkDone();  
+    await device.queue.onSubmittedWorkDone();
 
     let reconstructionRead = device.createTexture({
         size: [canvas.width, canvas.height],
@@ -755,21 +773,25 @@ async function renderPointsInDepthRange(
     sdf.destroyTexture();
 }
 
-async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraPosition, pointSize, mode) {
+async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraPosition, pointSize, mode, isOrtho, isSpherical, far) {
     // GAUSSIANS: najprej sortiramo točke v oblaku glede na njihovo globino
     // v odvisnosti od pogleda kamere, da zagotovimo pravilen back-to-front.
     if (mode === "GAUSSIANS") {
+        // Za sferične zajeme ni prave projekcijske matrike (projectionViewMatrix je
+        // identiteta), zato za sort key uporabimo dejansko view matriko in v shaderju
+        // računamo radialno razdaljo od kamere namesto clip-space z/w.
+        const sortMatrix = isSpherical ? viewMatrix : projectionViewMatrix;
         for (const pc of pointclouds) {
-            sortPointCloud(pc, projectionViewMatrix);
+            sortPointCloud(pc, sortMatrix, isSpherical);
         }
         await device.queue.onSubmittedWorkDone();
     }
 
-    // Sortiramo še same kose oblaka (batches) glede na globino njihovega centra, 
+    // Sortiramo še same kose oblaka (batches) glede na globino njihovega centra,
     // da zagotovimo pravilno zaporedje risanja med različnimi batchi.
     const batchesWithDepth = pointclouds.map((pc) => ({
         pc,
-        depth: getBatchDepth(pc, projectionViewMatrix),
+        depth: getBatchDepth(pc, projectionViewMatrix, isSpherical, cameraPosition),
     }));
     batchesWithDepth.sort((a, b) => b.depth - a.depth);
 
@@ -799,8 +821,8 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
     if (mode === "POINTS") {
         const drBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         device.queue.writeBuffer(drBuf, 0, new Float32Array([0, 1e6]));
-        const tBuf = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-        device.queue.writeBuffer(tBuf, 0, new Float32Array([targetPosition[0], targetPosition[1], targetPosition[2], 0]));
+        const tBuf = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(tBuf, 0, new Float32Array([targetPosition[0], targetPosition[1], targetPosition[2], 0, isSpherical, far, 0, 0]));
 
         const mvpBuf = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         device.queue.writeBuffer(mvpBuf, 0, new Float32Array(projectionViewMatrix));
@@ -815,15 +837,17 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
             layout: renderingPipeline.getBindGroupLayout(2),
             entries: [{ binding: 0, resource: { buffer: drBuf } }],
         });
-        const targetBG = device.createBindGroup({
+        const renderParamsBG = device.createBindGroup({
             layout: renderingPipeline.getBindGroupLayout(3),
-            entries: [{ binding: 0, resource: { buffer: tBuf } }],
+            entries: [
+                { binding: 0, resource: { buffer: tBuf } }
+            ],
         });
 
         renderPass.setPipeline(renderingPipeline);
         renderPass.setBindGroup(1, matricesBG);
         renderPass.setBindGroup(2, depthRangeBG);
-        renderPass.setBindGroup(3, targetBG);
+        renderPass.setBindGroup(3, renderParamsBG);
         for (const { pc } of batchesWithDepth) {
             renderPass.setBindGroup(0, device.createBindGroup({
                 layout: renderingPipeline.getBindGroupLayout(0),
@@ -858,7 +882,7 @@ async function capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTex
         const drBuf = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
         device.queue.writeBuffer(drBuf, 0, new Float32Array([0, 1e6]));
 
-        const sceneBG = createScreenParamsBindGroup(targetPosition, cameraPosition, pointSize, pipeline);
+        const sceneBG = createScreenParamsBindGroup(targetPosition, cameraPosition, pointSize, pipeline, isOrtho, isSpherical, far);
 
         const matricesBG = device.createBindGroup({
             layout: pipeline.getBindGroupLayout(1),
@@ -974,6 +998,15 @@ function buildSortBindGroups(pointcloud) {
     });
     device.queue.writeBuffer(numBuf, 0, new Uint32Array([n]));
 
+    // Flag, ki pove preparation shaderju, ali gre za sferičen (panoramski) zajem -
+    // v tem primeru prepViewBuffer vsebuje view matriko (ne projekcijsko), zato
+    // je treba sort key računati kot radialno razdaljo od kamere.
+    pointcloud.prepIsSphericalBuffer = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(pointcloud.prepIsSphericalBuffer, 0, new Uint32Array([0]));
+
     // Bind group za pripravo (preparation pass)
     pointcloud.prepBG0 = device.createBindGroup({
         layout: preparationPipeline.getBindGroupLayout(0),
@@ -984,6 +1017,7 @@ function buildSortBindGroups(pointcloud) {
         entries: [
             { binding: 0, resource: { buffer: pointcloud.prepViewBuffer } },
             { binding: 1, resource: { buffer: numBuf } },
+            { binding: 2, resource: { buffer: pointcloud.prepIsSphericalBuffer } },
         ],
     });
 
@@ -1013,7 +1047,7 @@ function buildSortBindGroups(pointcloud) {
     }
 }
 
-function sortPointCloud(pointcloud, viewMatrix) {
+function sortPointCloud(pointcloud, viewMatrix, isSpherical = false) {
     if (!preparationPipeline || !localSortPipeline || !globalSortPipeline) {
         console.warn("⚠️ Sorting pipelines not available, skipping sort");
         return;
@@ -1026,6 +1060,7 @@ function sortPointCloud(pointcloud, viewMatrix) {
 
 
     device.queue.writeBuffer(pointcloud.prepViewBuffer, 0, new Float32Array(viewMatrix));
+    device.queue.writeBuffer(pointcloud.prepIsSphericalBuffer, 0, new Uint32Array([isSpherical ? 1 : 0]));
 
     // Preparation pass
     // izračunamo globino vsake točke glede na trenutni pogled kamere in shranimo v buffer
@@ -1064,8 +1099,14 @@ function sortPointCloud(pointcloud, viewMatrix) {
 }
 
 // Pomožna funkcija za izračun globine batcha glede na center celice in trenutni pogled kamere
-function getBatchDepth(pointcloud, projectionViewMatrix) {
+function getBatchDepth(pointcloud, projectionViewMatrix, isSpherical = false, cameraPosition = null) {
     const [px, py, pz] = pointcloud.center;
+    if (isSpherical) {
+        // projectionViewMatrix je pri sferičnih zajemih identiteta (ni prave
+        // projekcije), zato batche razvrstimo po radialni razdalji od kamere.
+        const [cx, cy, cz] = cameraPosition;
+        return Math.hypot(px - cx, py - cy, pz - cz);
+    }
     const m = projectionViewMatrix;
     const clipZ = m[2]*px + m[6]*py + m[10]*pz + m[14];
     const clipW = m[3]*px + m[7]*py + m[11]*pz + m[15];

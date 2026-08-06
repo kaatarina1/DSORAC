@@ -1,5 +1,5 @@
 export class DepthMap {
-	constructor(canvas, device, viewMatrix, projectionViewMatrix, pointclouds) {
+	constructor(canvas, device, viewMatrix, projectionViewMatrix, pointclouds, isSpherical = false) {
 		this.canvas = canvas;
 		this.device = device;
 		this.viewMatrix = viewMatrix;
@@ -30,6 +30,12 @@ export class DepthMap {
 			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
 		});
 		this.device.queue.writeBuffer(this.viewMatrixBuffer, 0, new Float32Array(viewMatrix));
+
+		this.isSphericalBuffer = this.device.createBuffer({
+			size: 4,
+			usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+		});
+		this.device.queue.writeBuffer(this.isSphericalBuffer, 0, new Float32Array([isSpherical ? 1 : 0]));
 	}
 
 	// Shader naložimo asinhrono ob prvi uporabi (v konstruktorju await ni dovoljen)
@@ -52,6 +58,7 @@ export class DepthMap {
 			entries: [
 				{ binding: 0, resource: { buffer: this.projMatrixBuffer } },
 				{ binding: 1, resource: { buffer: this.viewMatrixBuffer } },
+				{ binding: 2, resource: { buffer: this.isSphericalBuffer } },
 			],
 		});
 

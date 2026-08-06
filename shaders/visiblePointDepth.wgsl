@@ -20,6 +20,8 @@ struct ChunkParams {
 @group(0) @binding(2) var<storage, read_write> outputDepths: array<f32>;
 @group(1) @binding(0) var<uniform> projectionViewMatrix: mat4x4f;
 @group(1) @binding(1) var<uniform> viewMatrix: mat4x4f;
+@group(1) @binding(2) var<uniform> isSpherical: f32;
+
 
 @compute @workgroup_size(256)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
@@ -31,17 +33,25 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     let pos = points[index].position;
 
-    // preverimo ali je znotraj viewa
-    let clipPos = projectionViewMatrix * vec4f(pos, 1.0);
-    let inView = clipPos.w > 0.0
-        && abs(clipPos.x) <= clipPos.w
-        && abs(clipPos.y) <= clipPos.w
-        && clipPos.z >= 0.0 && clipPos.z <= clipPos.w;
-
-    if (inView) {
+    if (isSpherical > 0.5) {
+        // Sferičen (panoramski) zajem nima prave frustum projekcije - vsaka
+        // točka je v neki smeri "vidna", zato brez NDC/frustum testa računamo
+        // le radialno razdaljo od kamere (usklajeno z rendering.wgsl).
         let viewPos = viewMatrix * vec4f(pos, 1.0);
-        outputDepths[chunk.offset + index] = -viewPos.z; // linearna globina v prostoru pogleda
+        outputDepths[chunk.offset + index] = length(viewPos.xyz);
     } else {
-        outputDepths[chunk.offset + index] = -1.0;
+        // preverimo ali je znotraj viewa
+        let clipPos = projectionViewMatrix * vec4f(pos, 1.0);
+        let inView = clipPos.w > 0.0
+            && abs(clipPos.x) <= clipPos.w
+            && abs(clipPos.y) <= clipPos.w
+            && clipPos.z >= 0.0 && clipPos.z <= clipPos.w;
+
+        if (inView) {
+            let viewPos = viewMatrix * vec4f(pos, 1.0);
+            outputDepths[chunk.offset + index] = -viewPos.z; // linearna globina v prostoru pogleda
+        } else {
+            outputDepths[chunk.offset + index] = -1.0;
+        }
     }
 }

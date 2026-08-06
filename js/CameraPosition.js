@@ -97,7 +97,7 @@ export class CameraPosition {
 
 	// Izračuna view in projection matriko.
 	// Vrne tudi izračunane near/far ravnini, ki jih lahko uporabi depth binning za optimalno deljenje globine.
-	computeCameraMatrix(eye, target, canvas, bbMin, bbMax) {
+	computeCameraMatrix(eye, target, canvas, bbMin, bbMax, fovDeg = 45) {
 		const dir = [
 			target[0] - eye[0],
 			target[1] - eye[1],
@@ -121,7 +121,7 @@ export class CameraPosition {
 
 		const viewMatrix = mat4.lookAt(eye, target, up);
 		const projectionMatrix = mat4.perspective(
-			45 * (Math.PI / 180),
+			fovDeg * (Math.PI / 180),
 			canvas.width / canvas.height,
 			near,
 			far
@@ -212,7 +212,7 @@ export class CameraPosition {
 	// točk .join() na enem samem nizu porabi ogromno pomnilnika.
 	writePoints3DTxt(positions, colors, scaleFactor = 1.0) {
 		const totalPoints = positions.length / 3;
-		const samplingRate = 100; // Vyorčimo vsak 5. point 
+		const samplingRate = 10; // Vyorčimo vsak 5. point 
 		
 		console.log(`Writing points3D.txt with scale factor: ${scaleFactor}, sampling rate: ${samplingRate} (from ${totalPoints} points)`);
 
@@ -262,5 +262,28 @@ export class CameraPosition {
 		const projectionViewMatrix = mat4.multiply(projectionMatrix, viewMatrix);
 
 		return { viewMatrix, projectionMatrix, projectionViewMatrix, near, far };
+	}
+
+	computeSphericalCameraMatrix(eye, bbMin, bbMax, yawDeg) {
+		let viewMatrix = mat4.lookAt(eye, [eye[0], eye[1], eye[2] - 1], [0, 1, 0]);
+		if (yawDeg && yawDeg !== 0) {
+			viewMatrix = mat4.multiply(mat4.rotateY(yawDeg * Math.PI/180), viewMatrix);
+		}
+
+		let far = 0;
+		for (let xi = 0; xi <= 1; xi++) {
+			for (let yi = 0; yi <= 1; yi++) {
+				for (let zi = 0; zi <= 1; zi++) {
+					const corner = [
+						xi ? bbMax[0] : bbMin[0],
+						yi ? bbMax[1] : bbMin[1],
+						zi ? bbMax[2] : bbMin[2],
+					]
+					far = Math.max(far, Math.hypot(corner[0] - eye[0], corner[1] - eye[1], corner[2] - eye[2]));
+				}	
+			}
+		}
+		far = Math.max(far * 1.05, 0.01);
+		return { viewMatrix, far };
 	}
 }

@@ -101,6 +101,7 @@ class WorkerPool {
                     width: config.width,
                     height: config.height,
                     mode: currentMode,
+                    lasFile: config.lasFile,
                 }
             });
 
@@ -519,17 +520,21 @@ for (const [cls, color] of [...presentClasses].sort((a, b) => a[0] - b[0])) {
 
 console.log(`Loaded ${positions.length / 3} points`);
 
-// Izračunamo bounding box oblaka točk
-let bbMin = [Infinity, Infinity, Infinity];
-let bbMax = [-Infinity, -Infinity, -Infinity];
-for (let i = 0; i < positions.length; i += 3) {
-    bbMin[0] = Math.min(bbMin[0], positions[i]);
-    bbMin[1] = Math.min(bbMin[1], positions[i + 1]);
-    bbMin[2] = Math.min(bbMin[2], positions[i + 2]);
-    bbMax[0] = Math.max(bbMax[0], positions[i]);
-    bbMax[1] = Math.max(bbMax[1], positions[i + 1]);
-    bbMax[2] = Math.max(bbMax[2], positions[i + 2]);
+function computeBBox(positions) {
+    let bbMin = [Infinity, Infinity, Infinity];
+    let bbMax = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i < positions.length; i += 3) {
+        bbMin[0] = Math.min(bbMin[0], positions[i]);
+        bbMin[1] = Math.min(bbMin[1], positions[i + 1]);
+        bbMin[2] = Math.min(bbMin[2], positions[i + 2]);
+        bbMax[0] = Math.max(bbMax[0], positions[i]);
+        bbMax[1] = Math.max(bbMax[1], positions[i + 1]);
+        bbMax[2] = Math.max(bbMax[2], positions[i + 2]);
+    }
+    return { bbMin, bbMax };
 }
+// Izračunamo bounding box oblaka točk
+let { bbMin, bbMax } = computeBBox(positions);
 console.log("Point cloud bounding box:", bbMin, bbMax);
 
 // Naložimo shaderje in ustvarimo render pipeline
@@ -592,8 +597,8 @@ function writeSceneParams(tp, camPos, pointSize, isOrtho = false) {
     const data = new Float32Array(12);
     data[0] = tp[0];   data[1] = tp[1];   data[2] = tp[2];   data[3] = 0;   // targetPosition
     // cameraPos.w: 0 = perspektivna kamera, 1 = oortografska kamera (potrebno za dločanje orientacije diskov)
-    data[4] = camPos[0]; data[5] = camPos[1]; data[6] = camPos[2]; data[7] = isOrtho ? 1 : 0; // cameraPos
-    data[8] = pointSize; data[9] = 0; data[10] = 0; data[11] = 0;             // pointSize + pad
+    data[4] = camPos[0]; data[5] = camPos[1]; data[6] = camPos[2]; data[7] = 0; // cameraPos
+    data[8] = pointSize; data[9] = isOrtho ? 1 : 0; data[10] = 0; data[11] = 0; // pointSize + isOrtho + pad
     device.queue.writeBuffer(sceneParamsBuffer, 0, data);
 }
 
@@ -637,6 +642,7 @@ const controls = new RenderingControls({
     },
     onMasksLoaded: (zipFile, votingMode) => segmentation.processZip(zipFile, votingMode),
     onDownloadLas: () => downloadLas(),
+    onConfigLoaded: async (jsonFile) => captureImagesFromConfig(JSON.parse(await jsonFile.text())),
 });
 controls.mount(document.body);
 
@@ -897,50 +903,8 @@ async function generateImagesParallel() {
             
             console.log(`\n📦 Processing batch ${batch + 1}/${numBatches} (images ${start + 1}-${end})...`);
             
-            // Ustvarimo nov WorkerPool za vsak batch, da zagotovimo popolno sprostitev GPU virov po vsakem batchu
-            workerPool = new WorkerPool(activeWorkerCount);
-            await workerPool.initialize({
-                width: CONFIG.canvasWidth,
-                height: CONFIG.canvasHeight,
-                mode: currentMode,
-            });
-
-            // Obdelamo trenutni batch nalog in spremljamo napredek
-            const batchResults = await workerPool.processImages(
-                batchTasks,
-                (progress) => {
-                    const totalCompleted = start + progress.completed;
-                    const elapsed = (performance.now() - startTime) / 1000 / 60;
-                    const remaining = (elapsed / totalCompleted) * (allTasks.length - totalCompleted);
-                    
-                    console.log(
-                        `✓ ${totalCompleted}/${allTasks.length} ` +
-                        `(${((totalCompleted / allTasks.length) * 100).toFixed(1)}%) | ` +
-                        `Batch: ${progress.completed}/${batchTasks.length} | ` +
-                        `Elapsed: ${elapsed.toFixed(1)}m | ` +
-                        `Remaining: ~${remaining.toFixed(1)}m`
-                    );
-                }
-            );
-
+            const batchResults = await runBatchedTasks(batchTasks, CONFIG.lasFile, allTasks.length, start, startTime, batch, numBatches, useParallelBatching, activeWorkerCount);
             allResults.push(...batchResults);
-            
-            console.log(`📊 Batch ${batch + 1} results: ${batchResults.length}/${batchTasks.length} images received`);
-
-            if (useParallelBatching) {
-                console.log(`⏳ Waiting for GPU and message queue to clear...`);
-                await new Promise(resolve => setTimeout(resolve, 4000));
-            }
-            
-            // Ustavimo workerje, da sprostimo GPU vire
-            await workerPool.shutdown();
-            console.log(`✓ Batch ${batch + 1} complete, workers shut down`);
-            
-            // Dodamo majhen zamik pred začetkom naslednjega batcha, da zagotovimo, da so vsi GPU viri sproščeni
-            if (useParallelBatching && batch < numBatches - 1) {
-                console.log(`⏳ Cooling down GPU before next batch...`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
-            }
         }
 
 
@@ -1009,6 +973,87 @@ async function generateImagesParallel() {
             await workerPool.shutdown();
         }
     }
+}
+
+async function runBatchedTasks(tasks, lasFile, allTasksCount, start, startTime, batch = 0, numBatches = 1, useParallelBatching = false, activeWorkerCount = 1) {
+    // Ustvarimo nov WorkerPool za vsak batch, da zagotovimo popolno sprostitev GPU virov po vsakem batchu
+    workerPool = new WorkerPool(activeWorkerCount);
+    await workerPool.initialize({
+        width: CONFIG.canvasWidth,
+        height: CONFIG.canvasHeight,
+        mode: currentMode,
+        lasFile: lasFile,
+    });
+
+    // Obdelamo trenutni batch nalog in spremljamo napredek
+    const batchResults = await workerPool.processImages(
+        tasks,
+        (progress) => {
+            const totalCompleted = start + progress.completed;
+            const elapsed = (performance.now() - startTime) / 1000 / 60;
+            const remaining = (elapsed / totalCompleted) * (allTasksCount - totalCompleted);
+            
+            console.log(
+                `✓ ${totalCompleted}/${allTasksCount} ` +
+                `(${((totalCompleted / allTasksCount) * 100).toFixed(1)}%) | ` +
+                `Batch: ${progress.completed}/${tasks.length} | ` +
+                `Elapsed: ${elapsed.toFixed(1)}m | ` +
+                `Remaining: ~${remaining.toFixed(1)}m`
+            );
+        }
+    );
+            
+    console.log(`📊 Batch ${batch + 1} results: ${batchResults.length}/${tasks.length} images received`);
+
+    if (useParallelBatching) {
+        console.log(`⏳ Waiting for GPU and message queue to clear...`);
+        await new Promise(resolve => setTimeout(resolve, 4000));
+    }
+            
+    // Ustavimo workerje, da sprostimo GPU vire
+    await workerPool.shutdown();
+    console.log(`✓ Batch ${batch + 1} complete, workers shut down`);
+            
+    // Dodamo majhen zamik pred začetkom naslednjega batcha, da zagotovimo, da so vsi GPU viri sproščeni
+    if (useParallelBatching && batch < numBatches - 1) {
+        console.log(`⏳ Cooling down GPU before next batch...`);
+        await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+
+    return batchResults;
+}
+
+async function captureImagesFromConfig(configJson) {
+    const startTime = performance.now();
+    if (configJson.canvasWidth) CONFIG.canvasWidth = configJson.canvasWidth;
+    if (configJson.canvasHeight) CONFIG.canvasHeight = configJson.canvasHeight;
+    const zip = new JSZip();
+    for (const model of configJson.models) {
+        const modelName = model.lasFile.split('/').pop().replace(/\.las$/i, '');
+        const loader = new LasLoader(model.lasFile);
+        const modelData = await loader.loadLasData();
+
+        const tasks = model.cameras.map((cam, i) => ({
+            imageIndex: i,
+            cameraPosition: cam.eye,
+            target: cam.target ?? [cam.panX, cam.eyeY - 1, cam.panZ],
+            projection: cam.projection ?? "PERSPECTIVE",
+            eyeY: cam.eyeY, panX: cam.panX, panZ: cam.panZ, zoom: cam.zoom,
+            yawDeg: cam.yawDeg,
+            fovDeg: cam.fovDeg,
+            mode: cam.technique ?? "POINTS",
+            useReconstruction: cam.useReconstruction ?? true,
+            pointSize: cam.pointSize ?? 0.2,
+            colorOrder: CONFIG.reconstructionColorOrder,
+            targetPosition: cam.target ?? [cam.panX, cam.eyeY - 1, cam.panZ],
+        }));
+
+        const results = await runBatchedTasks(tasks, model.lasFile, tasks, CONFIG.batchSize, startTime);
+
+        for (const result of results) zip.file(`${modelName}/${result.metadata.filename}`, result.blob);
+    }
+    const blob = await zip.generateAsync({ type: "blob" });
+    saveAs(blob, configJson.outputZipName ?? "batchr_capture.zip");
 }
 
 async function exportResults(capturedData) {
@@ -1250,6 +1295,15 @@ function buildSortBindGroups(pointcloud) {
     });
     device.queue.writeBuffer(numBuf, 0, new Uint32Array([n]));
 
+    // main_parallel.js (live pregled) ne podpira sferične projekcije, zato je
+    // ta zastavica vedno 0 - obstaja samo zato, ker preparation.wgsl deli isti
+    // pipeline layout z imageGenerationWorker.js.
+    const isSphericalBuf = device.createBuffer({
+        size: 4,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(isSphericalBuf, 0, new Uint32Array([0]));
+
     // Bind group za pripravo (preparation pass)
     pointcloud.prepBG0 = device.createBindGroup({
         layout: preparationPipeline.getBindGroupLayout(0),
@@ -1260,6 +1314,7 @@ function buildSortBindGroups(pointcloud) {
         entries: [
             { binding: 0, resource: { buffer: pointcloud.prepViewBuffer } },
             { binding: 1, resource: { buffer: numBuf } },
+            { binding: 2, resource: { buffer: isSphericalBuf } },
         ],
     });
 
@@ -1397,11 +1452,11 @@ function frame() {
 
     // Target position — vec4f padded for alignment
     const targetPosBuf = device.createBuffer({
-        size: 16,
+        size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     const tp = CONFIG.targetPositionsAndRadii[0].pos;
-    device.queue.writeBuffer(targetPosBuf, 0, new Float32Array([tp[0], tp[1], tp[2], 0.0]));
+    device.queue.writeBuffer(targetPosBuf, 0, new Float32Array([tp[0], tp[1], tp[2], 0.0, 0, 0, 0, 0]));
 
     const commandEncoder = device.createCommandEncoder();
     const renderPass = commandEncoder.beginRenderPass({
