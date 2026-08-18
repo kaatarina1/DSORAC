@@ -1,4 +1,4 @@
-import * as mat4 from "./mat4.js";
+import * as mat4 from "./_Mat4.js";
 
 export class CameraPosition {
 	constructor(canvas, device, renderingPipeline) {

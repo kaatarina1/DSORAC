@@ -136,10 +136,6 @@ export function normalize(v) {
 export function getIntrinsics(width, height, fovy) {
     const aspect = width / height;
 
-    // focal lengths (COLMAP convention: pixels)
-    // Both equal f*height/2 because the perspective X-scale f/aspect, multiplied
-    // by width/2, reduces to f*height/2 (since aspect = width/height).
-    // CHECK THIS IF THERE ARE PROBLEMS WITH COLMAPS FOR GAUSSIAN SPLATTING
     const fy = (height / 2) / Math.tan(fovy / 2);
     const fx = fy;
 

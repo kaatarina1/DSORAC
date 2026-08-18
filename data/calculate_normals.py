@@ -3,8 +3,11 @@ import numpy as np
 import laspy
 import struct
 import io
+from scipy.spatial import cKDTree
 
-name = "cropped_filtered_1"
+name = "bezigrad"
+base = "./"
+
 # Potrebno, da zagotovimo pravilno izvaja tudi če ima LAS datoteka že obstoječe (a napačne/duplikatne) 
 # VLR-je z ekstra dimenzijami, ki bi lahko motili naš izračun normal. 
 # Ta funkcija prebere surove bajte LAS datoteke, identificira in odstrani vse VLR-je z ekstra dimenzijami, 
@@ -91,7 +94,7 @@ def fix_duplicate_extra_bytes(path):
 
 
 # Naložimo LAS datoteko
-path = name + ".las"
+path = base + name + ".las"
 
 # Počistimo morebitne problematične VLR-je z ekstra dimenzijami, ki bi lahko motili izračun normal
 print("Patching raw bytes to remove duplicate/stale extra dims...")
@@ -105,6 +108,7 @@ except Exception as e:
     raise
 
 points = np.vstack((las.x, las.y, las.z)).T
+origin = points.min(axis=0)
 colors = np.vstack((las.red, las.green, las.blue)).T / 65535.0
 src_header = las.header
 print(f"X: [{points[:,0].min():.2f}, {points[:,0].max():.2f}] ")
@@ -136,32 +140,32 @@ if z_range <= y_range and z_range <= x_range:
     sensor_pos = center + np.array([0, 0, 1000.0])
     print("Detected Z-up")
 elif y_range <= x_range and y_range <= z_range:
-    # Y is up 
-    sensor_pos = center + np.array([0, 1000.0, 0])
+    up_axis = np.array([0.0, 1.0, 0.0])
     print("Detected Y-up")
 else:
-    # X is up (unusual)
-    sensor_pos = center + np.array([1000.0, 0, 0])
+    up_axis = np.array([1.0, 0.0, 0.0])
     print("Detected X-up")
 
-pcd_down.orient_normals_towards_camera_location(camera_location=sensor_pos)
+pcd_down.orient_normals_consistent_tangent_plane(k=10)
 
-# Na koncu normale razširimo na celoten oblak
-# vsakemi točki dodelimo normalo najbližje downsampled točke.
-pcd_tree = o3d.geometry.KDTreeFlann(pcd_down)
-full_pts = np.asarray(pcd.points)
+# Po lokalni propagaciji popravimo samo globalni predznak (cel oblak naenkrat),
+# da normale večinoma kažejo navzgor namesto navzdol.
 down_normals = np.asarray(pcd_down.normals)
-full_normals = np.zeros_like(full_pts)
-for i, p in enumerate(full_pts):
-    _, idx, _ = pcd_tree.search_knn_vector_3d(p, 1)
-    full_normals[i] = down_normals[idx[0]]
+if np.mean(down_normals @ up_axis) < 0:
+    pcd_down.normals = o3d.utility.Vector3dVector(-down_normals)
+
+# Na koncu normale razširimo na celoten oblak: vsaki točki dodelimo normalo najbližje downsampled točke
+down_pts = np.asarray(pcd_down.points)
+down_normals = np.asarray(pcd_down.normals)
+_, nn_idx = cKDTree(down_pts).query(pts, k=1, workers=-1)
+full_normals = down_normals[nn_idx]
 pcd.normals = o3d.utility.Vector3dVector(full_normals)
 normals = np.asarray(pcd.normals)
 print(f"Mean normal: [{normals[:,0].mean():.3f}, {normals[:,1].mean():.3f}, {normals[:,2].mean():.3f}]")
 print(f"Normals computed: {normals.shape}")
 
 # Shrani rezultat obdelave v novo LAS datoteko
-filtered_points = np.asarray(pcd.points)
+filtered_points = np.asarray(pcd.points) + origin
 filtered_colors = (np.asarray(pcd.colors) * 65535).astype(np.uint16)
 
 header = laspy.LasHeader(
@@ -184,10 +188,10 @@ out.ny    = normals[:, 1].astype(np.float32)
 out.nz    = normals[:, 2].astype(np.float32)
 out.classification = las.classification
 
-out.write("./pc/" + name + "_normals.las")
-print("Saved → " + name + "_normals.las")
+out.write("./pc/" + name + "_normals_2.las")
+print("Saved → " + name + "_normals_2.las")
 
-las = laspy.read("./pc/" +  name + "_normals.las")
+las = laspy.read("./pc/" +  name + "_normals_2.las")
 
 print(las.point_format)
 print(las.point_format.dimension_names)

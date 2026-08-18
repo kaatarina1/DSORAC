@@ -1,4 +1,4 @@
-import * as mat4 from "./mat4.js";
+import * as mat4 from "./_Mat4.js";
 import JSZip from "jszip";
 
 // PNG DECODER (16-bit grayscale, za segmentacijske maske)
