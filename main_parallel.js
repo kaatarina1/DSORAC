@@ -1,4 +1,4 @@
-import * as mat4 from "./js/mat4.js";
+import * as mat4 from "./js/Mat4.js";
 import { PointerController } from "./js/PointerController.js";
 import { LasLoader } from "./js/LasLoader.js";
 import { CameraPosition } from "./js/CameraPosition.js";
@@ -24,27 +24,42 @@ const CONFIG = {
     // hemisphereRadii: [170],
     // object model
     // hemisphereRadii: [1],
-    imagesPerCombination: 150, // 110
-    // lasFile: "./data/pc/cropped_filtered_1.las",
-    lasFile: "./data/pc/bezigrad_normals.las",
+    imagesPerCombination: 50, // 110
+    // lasFile: "./data/pc/ljubljana_1.las",
+    // lasFile: "./data/pc/ljubljana_2.las",
+    lasFile: "./data/pc/ljubljana_3.las",
+    // lasFile: "./data/pc/ljubljanica_normals.las",
+    // lasFile: "./data/pc/bezigrad_normals.las",
+    // lasFile: "./data/pc/fri_normals.las",
+    // lasFile: "./data/pc/celje_normals.las",
+    // lasFile: "./data/pc/Barn_normals.las",
+    // lasFile: "./data/pc/Truck.las",
+    // lasFile: "./data/pc/ljubljana_3_draco_normals.las",
+    // lasFile: "./data/pc/ljubljana_3_gpcc_normals.las",
+    // lasFile: "./data/pc/bezigrad_draco_normals.las",
+    // lasFile: "./data/pc/bezigrad_gpcc_normals.las",
+    // lasFile: "./data/pc/lego_draco_normals.las",
+    // lasFile: "./data/pc/lego_gpcc_normals.las",
+    // lasFile: "./data/pc/Ignatius_normals.las",
+    // lasFile: "./data/Lego856_PointCloud.las",
     targetPositionsAndRadii: [
         // terrestrial
-        // {radii: 100, pos: [0, 5, 0]},
-        // {radii: 50, pos: [-20, 5, -10]},
-        // {radii: 50, pos: [20, 5, -10]},
-        // {radii: 50, pos: [-20, 5, 10]},
-        // {radii: 50, pos: [20, 5, 10]},
-        // {radii: 30, pos: [5, 5, -5]},
-        // {radii: 30, pos: [-8, 5, 2]},
-        // {radii: 30, pos: [0, 5, -9]},
+        {radii: 100, pos: [0, 5, 0]},
+        {radii: 50, pos: [-20, 5, -10]},
+        {radii: 50, pos: [20, 5, -10]},
+        {radii: 50, pos: [-20, 5, 10]},
+        {radii: 50, pos: [20, 5, 10]},
+        {radii: 30, pos: [5, 5, -5]},
+        {radii: 30, pos: [-8, 5, 2]},
+        {radii: 30, pos: [0, 5, -9]},
         // air borne
-        {radii: 170, pos: [0, 5, 0]},
-        {radii: 170, pos: [50, 5, 50]},
-        {radii: 170, pos: [-50, 5, 50]},
-        {radii: 170, pos: [50, 5, -50]},
-        {radii: 170, pos: [-50, 5, -50]},
+        // {radii: 170, pos: [0, 5, 0]},
+        // {radii: 170, pos: [50, 5, 50]},
+        // {radii: 170, pos: [-50, 5, 50]},
+        // {radii: 170, pos: [50, 5, -50]},
+        // {radii: 170, pos: [-50, 5, -50]},
         // object model - lego 
-        // { radii: 3, pos: [0, 0.5, 0] },
+        // { radii: 80, pos: [0, 5, 0] },
         // object model - truck 
         // { radii: 10, pos: [0, 0.5, 0] },
         // object model - statue 
@@ -686,11 +701,11 @@ const matricesBindGroup = device.createBindGroup({
 });
 
 // Camera controls
-let cameraPosition = [0, 2, 0]; // 0, 20, 0
+let cameraPosition = [0, 20, 0]; // 0, 170, 0
 let cameraTarget = [0, 0, 0];
 let yaw = 0;
 let pitch = Math.PI / 2 - 0.1;  // Start looking down from above
-let distance = 8; // 20
+let distance = 20; // 170
 
 const pointerController = new PointerController(canvas);
 
@@ -812,6 +827,7 @@ document.addEventListener("keydown", async (event) => {
 });
 
 async function generateImagesParallel() {
+    let densitySum = 0; 
     const startTime = performance.now();
     // Reconstruction (depth binning + SOR solver) is only meaningful for POINTS mode.
     // Quad modes (DISKS, BILLBOARDS, GAUSSIANS) always do a direct capture.
@@ -932,6 +948,18 @@ async function generateImagesParallel() {
         
         const successfulResults = allResults.filter(r => r && r.metadata);        
         console.log(`✓ Successfully generated ${successfulResults.length}/${allTasks.length} images`);
+
+        // Povprečna gostota projiciranih točk (točk na piksel)
+        const densities = successfulResults
+            .map(r => r.metadata.density)
+            .filter(d => d !== undefined);
+        if (densities.length > 0) {
+            const avgDensity = densities.reduce((sum, d) => sum + d, 0) / densities.length;
+            console.log(
+                `📊 Average viewpoint density: ${avgDensity.toFixed(2)} points/pixel ` +
+                `over ${densities.length} views @ ${CONFIG.canvasWidth}×${CONFIG.canvasHeight}`
+            );
+        }
 
         // Izvozimo rezultate (cameras.txt, images.txt, points3D.txt) v ZIP arhiv
         await exportResults(

@@ -127,10 +127,23 @@ export class DepthMap {
 		return depthValues;
 	}
 
-	/**
-	 * Deljenje globine v bin-e, ki vsebujejo približno enako število točk, ne glede na razdaljo kamere. 
-	 * Bin-i so v linearnih enotah pogleda, da jih shader lahko neposredno primerja.
-	 */
+	async computeViewpointDensity() {
+		if (this.pointsInView === undefined) {
+			const depthValues = await this.extractDepthValues();
+			let inView = 0;
+			for (let i = 0; i < depthValues.length; i++) {
+				if (depthValues[i] > 0) inView++;
+			}
+			this.pointsInView = inView;
+		}
+
+		const pixels = this.canvas.width * this.canvas.height;
+		return this.pointsInView / pixels;
+	}
+
+	
+	// Deljenje globine v bin-e, ki vsebujejo približno enako število točk, ne glede na razdaljo kamere. 
+	// Bin-i so v linearnih enotah pogleda, da jih shader lahko neposredno primerja.
 	async groupDepthIntoBins({
 		numBins = 12, // Število ciljanih binov (globinskih rezin)
 		near = 0.05, // Near ravnina (mora biti usklajena s tisto, ki jo shader uporablja za renderiranje)
@@ -142,16 +155,21 @@ export class DepthMap {
 
 		// Globine so že linearne (view-space), točke izven pogleda imajo -1.
 		const linear = [];
+		let inView = 0;
 		let minDepth = Infinity;
 		let maxDepth = -Infinity;
 		for (let i = 0; i < depthValues.length; i++) {
 			const d = depthValues[i];
 			if (d > 0 && Number.isFinite(d) && d >= near && d <= far) {
+				inView++;
 				linear.push(d);
 				if (d < minDepth) minDepth = d;
 				if (d > maxDepth) maxDepth = d;
 			}
 		}
+
+		// Shranimo, da je computeViewpointDensity() po binningu zastonj.
+		this.pointsInView = inView;
 
 		if (linear.length === 0) {
 			console.warn("No valid depth samples — returning single fallback bin");

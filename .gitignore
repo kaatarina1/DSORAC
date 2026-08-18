@@ -10,3 +10,4 @@ js/temp.js
 .DS_Store
 .idea
 segmentation
+*.json

@@ -4,7 +4,7 @@ import { SignedDistanceFiled } from "./js/SignedDistanceFiled.js";
 import { Solver } from "./js/Solvers.js";
 import { convertTexture } from "./js/Utils.js";
 import { LasLoader } from "./js/LasLoader.js";
-import * as mat4 from "./js/mat4.js";
+import * as mat4 from "./js/Mat4.js";
 import { CameraPosition } from "./js/CameraPosition.js";
 import { AdaptiveGrid } from "./js/AdaptiveGrid.js";
 
@@ -21,6 +21,9 @@ let useClassColorsBuffer = null;
 let format = null;
 let deviceLost = false;
 let deviceLostPromise = null;
+
+let depthDensities = 0;
+let count = 0;
 
 // Worker-safe ustvarjanje Blob objekta iz GPU teksture
 async function getBlobWorkerSafe(data, width, height, colorOrder = "bgr") {
@@ -496,6 +499,7 @@ async function generateImage(params) {
         // Reconstruction pipeline deluje edino za POINTS tip izrisovanja.
         const effectiveReconstruction = useReconstruction && mode === "POINTS";
 
+        let density;
         if (effectiveReconstruction) {
             // await renderFullScene(projectionViewMatrix, viewMatrix, depthTexture, targetPosition);
 
@@ -504,6 +508,7 @@ async function generateImage(params) {
             
             try {
                 depthBins = await depthMap.groupDepthIntoBins({ near, far });
+                if (!isSpherical) density = await depthMap.computeViewpointDensity();
                 if (!depthBins || depthBins.length === 0) {
                     depthBins = [[0, 0.3], [0.3, 0.6], [0.6, 1.0]];
                 }
@@ -569,6 +574,16 @@ async function generateImage(params) {
             outputData = await capturePointCloudImage(projectionViewMatrix, viewMatrix, depthTexture, targetPosition, cameraDirOrPosition, pointSize, mode, isOrtho, isSpherical, far);
         }
 
+        // Izračunamo gostoto točk
+        if (density === undefined && mode === "POINTS" && !isSpherical) {
+            const densityMap = new DepthMap(canvas, device, viewMatrix, projectionViewMatrix, pointclouds, isSpherical);
+            try {
+                density = await densityMap.computeViewpointDensity();
+            } finally {
+                densityMap.destroy();
+            }
+        }
+
         const blob = await getBlobWorkerSafe(outputData, canvas.width, canvas.height, colorOrder);
         
         //Čakamo, da se vse GPU operacije zaključijo
@@ -592,6 +607,7 @@ async function generateImage(params) {
             blob,
             metadata: {
                 quat, t, fx, fy, cx, cy, width, height,
+                density,
                 filename: `image_${imageIndex + 1}_${target.join("_")}.png`
             }
         });
