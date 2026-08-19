@@ -4,7 +4,7 @@ import { SignedDistanceFiled } from "./js/SignedDistanceFiled.js";
 import { Solver } from "./js/Solvers.js";
 import { convertTexture } from "./js/Utils.js";
 import { LasLoader } from "./js/LasLoader.js";
-import * as mat4 from "./js/Mat4.js";
+import * as mat4 from "./js/_Mat4.js";
 import { CameraPosition } from "./js/CameraPosition.js";
 import { AdaptiveGrid } from "./js/AdaptiveGrid.js";
 
@@ -16,7 +16,6 @@ let globalSortPipeline = null;
 let quadPipelines = {};
 let pointclouds = [];
 let canvas = null;
-// useClassColors uniform buffer — always 0 in the worker (captures original RGB only)
 let useClassColorsBuffer = null;
 let format = null;
 let deviceLost = false;
@@ -139,7 +138,7 @@ async function initializeWorker(config) {
         const adapter = await navigator.gpu.requestAdapter();
         const hasBGRA8unormStorage = adapter.features.has("bgra8unorm-storage");
 
-        // Nekateri oblaki točk (npr. ljubljana_2/3) imajo dovolj točk, da depthStorageBuffer
+        // Nekateri oblaki točk (npr. ljubljana_2/3) imajo toliko točk, da depthStorageBuffer
         // v DepthMap (nPoints * 4 bajtov, brez chunkanja) preseže privzeti
         // maxStorageBufferBindingSize (128 MB) in povzroči izgubo GPU naprave.
         // Zahtevamo najvišjo limito, ki jo adapter podpira.

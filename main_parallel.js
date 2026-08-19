@@ -1,4 +1,4 @@
-import * as mat4 from "./js/Mat4.js";
+import * as mat4 from "./js/_Mat4.js";
 import { PointerController } from "./js/PointerController.js";
 import { LasLoader } from "./js/LasLoader.js";
 import { CameraPosition } from "./js/CameraPosition.js";
@@ -24,12 +24,12 @@ const CONFIG = {
     // hemisphereRadii: [170],
     // object model
     // hemisphereRadii: [1],
-    imagesPerCombination: 50, // 110
+    imagesPerCombination: 5, // 110
     // lasFile: "./data/pc/ljubljana_1.las",
     // lasFile: "./data/pc/ljubljana_2.las",
-    lasFile: "./data/pc/ljubljana_3.las",
+    // lasFile: "./data/pc/ljubljana_3.las",
     // lasFile: "./data/pc/ljubljanica_normals.las",
-    // lasFile: "./data/pc/bezigrad_normals.las",
+    lasFile: "./data/pc/bezigrad_normals.las",
     // lasFile: "./data/pc/fri_normals.las",
     // lasFile: "./data/pc/celje_normals.las",
     // lasFile: "./data/pc/Barn_normals.las",
@@ -45,13 +45,13 @@ const CONFIG = {
     targetPositionsAndRadii: [
         // terrestrial
         {radii: 100, pos: [0, 5, 0]},
-        {radii: 50, pos: [-20, 5, -10]},
-        {radii: 50, pos: [20, 5, -10]},
-        {radii: 50, pos: [-20, 5, 10]},
-        {radii: 50, pos: [20, 5, 10]},
-        {radii: 30, pos: [5, 5, -5]},
-        {radii: 30, pos: [-8, 5, 2]},
-        {radii: 30, pos: [0, 5, -9]},
+        // {radii: 50, pos: [-20, 5, -10]},
+        // {radii: 50, pos: [20, 5, -10]},
+        // {radii: 50, pos: [-20, 5, 10]},
+        // {radii: 50, pos: [20, 5, 10]},
+        // {radii: 30, pos: [5, 5, -5]},
+        // {radii: 30, pos: [-8, 5, 2]},
+        // {radii: 30, pos: [0, 5, -9]},
         // air borne
         // {radii: 170, pos: [0, 5, 0]},
         // {radii: 170, pos: [50, 5, 50]},
@@ -324,12 +324,12 @@ function hslToRgb(h, s, l) {
     const m = l - c / 2;
     let r = 0, g = 0, b = 0;
     const sec = Math.floor(h * 6) % 6;
-    if      (sec === 0) { r = c; g = x; }
+    if (sec === 0) { r = c; g = x; }
     else if (sec === 1) { r = x; g = c; }
-    else if (sec === 2) {        g = c; b = x; }
-    else if (sec === 3) {        g = x; b = c; }
-    else if (sec === 4) { r = x;        b = c; }
-    else                { r = c;        b = x; }
+    else if (sec === 2) { g = c; b = x; }
+    else if (sec === 3) { g = x; b = c; }
+    else if (sec === 4) { r = x; b = c; }
+    else { r = c; b = x; }
     return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
 }
 
@@ -628,7 +628,7 @@ device.queue.writeBuffer(classUniformBuffer, 0, new Uint32Array([0, 0, 0, 0]));
 // ============================================================================
 let useReconstruction = true; // State variable for reconstruction mode
 
-// ── Ortho top-down camera state ──────────────────────────────────────────────
+// ortofoto 
 let orthoMode  = false;
 const sceneHeight = bbMax[1] - bbMin[1];
 const sceneCX  = (bbMin[0] + bbMax[0]) / 2;
@@ -640,7 +640,6 @@ let orthoZoom  = Math.max(
     (bbMax[0] - bbMin[0]) / 2,
     (bbMax[2] - bbMin[2]) / 2
 ) * 1.15;
-// ─────────────────────────────────────────────────────────────────────────────
 
 let segmentation = null;
 const controls = new RenderingControls({
@@ -700,11 +699,11 @@ const matricesBindGroup = device.createBindGroup({
     ],
 });
 
-// Camera controls
+// Kontrole kamere
 let cameraPosition = [0, 20, 0]; // 0, 170, 0
 let cameraTarget = [0, 0, 0];
 let yaw = 0;
-let pitch = Math.PI / 2 - 0.1;  // Start looking down from above
+let pitch = Math.PI / 2 - 0.1; 
 let distance = 20; // 170
 
 const pointerController = new PointerController(canvas);
@@ -765,7 +764,7 @@ document.addEventListener("keydown", (event) => {
                 console.log(`Ortho eye Y: ${orthoEyeY.toFixed(2)}`);
                 break;
         }
-        return; // don't fall through to perspective controls
+        return;
     }
     const moveSpeed = 1.0;
     const forward = mat4.normalize([
@@ -829,8 +828,6 @@ document.addEventListener("keydown", async (event) => {
 async function generateImagesParallel() {
     let densitySum = 0; 
     const startTime = performance.now();
-    // Reconstruction (depth binning + SOR solver) is only meaningful for POINTS mode.
-    // Quad modes (DISKS, BILLBOARDS, GAUSSIANS) always do a direct capture.
     const effectiveReconstruction = useReconstruction && currentMode === "POINTS";
     const useParallelBatching = effectiveReconstruction;
     // Vsak worker naloži svojo lastno kopijo celotnega oblaka točk na GPU.
@@ -983,16 +980,16 @@ async function generateImagesParallel() {
         const totalTime = (performance.now() - startTime) / 1000 / 60;
 
         console.log(`
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ PARALLEL GENERATION COMPLETE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 Images: ${successfulResults.length}/${allTasks.length}
-⏱️  Time: ${totalTime.toFixed(1)} minutes
-⚡ Avg: ${successfulResults.length > 0 ? (totalTime * 60 / successfulResults.length).toFixed(1) : 'N/A'}s/image
-🚀 Workers: ${activeWorkerCount}
-📦 Batches: ${numBatches} (${useParallelBatching ? activeBatchSize : allTasks.length} images each)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-        `);
+                    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    ✓ PARALLEL GENERATION COMPLETE
+                    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                    📊 Images: ${successfulResults.length}/${allTasks.length}
+                    ⏱️  Time: ${totalTime.toFixed(1)} minutes
+                    ⚡ Avg: ${successfulResults.length > 0 ? (totalTime * 60 / successfulResults.length).toFixed(1) : 'N/A'}s/image
+                    🚀 Workers: ${activeWorkerCount}
+                    📦 Batches: ${numBatches} (${useParallelBatching ? activeBatchSize : allTasks.length} images each)
+                    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                `);
 
     } catch (error) {
         console.error("❌ Error:", error);
@@ -1211,17 +1208,17 @@ for (const cell of grid.cells) {
     cell.indices.forEach((j, slot) => {
         const posIndex = j * 3;
         const pointOffset = slot * pointByteSize;
-        pointDataView.setFloat32(pointOffset,      positions[posIndex],     true);
-        pointDataView.setFloat32(pointOffset +  4, positions[posIndex + 1], true);
-        pointDataView.setFloat32(pointOffset +  8, positions[posIndex + 2], true);
-        pointDataView.setUint32( pointOffset + 12, colors[j],               true);
-        pointDataView.setFloat32(pointOffset + 16, normals[posIndex],       true);
-        pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1],   true);
-        pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2],   true);
-        pointDataView.setFloat32(pointOffset + 28, 0.0,                     true); // depth (sort key)
-        pointDataView.setUint32( pointOffset + 32, classColors[j],          true); // classColor (overwritten by segmentation)
-        pointDataView.setUint32( pointOffset + 36, cellGlobalStart + slot,  true); // _pad0 = stable global index
-        pointDataView.setUint32( pointOffset + 40, classColors[j],          true); // lasClassColor (permanent LAS ASPRS classes)
+        pointDataView.setFloat32(pointOffset, positions[posIndex], true);
+        pointDataView.setFloat32(pointOffset + 4, positions[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset + 8, positions[posIndex + 2], true);
+        pointDataView.setUint32( pointOffset + 12, colors[j], true);
+        pointDataView.setFloat32(pointOffset + 16, normals[posIndex], true);
+        pointDataView.setFloat32(pointOffset + 20, normals[posIndex + 1], true);
+        pointDataView.setFloat32(pointOffset + 24, normals[posIndex + 2], true);
+        pointDataView.setFloat32(pointOffset + 28, 0.0, true); // depth (sort key)
+        pointDataView.setUint32( pointOffset + 32, classColors[j], true); // classColor (overwritten by segmentation)
+        pointDataView.setUint32( pointOffset + 36, cellGlobalStart + slot, true); // _pad0 = stable global index
+        pointDataView.setUint32( pointOffset + 40, classColors[j], true); // lasClassColor (permanent LAS ASPRS classes)
     });
 
     const pointBuffer = device.createBuffer({

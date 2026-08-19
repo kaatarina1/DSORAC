@@ -41,9 +41,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let normalizedDepth = (depths[i] - minDepth) / depthRange;
         let closeness = 1.0 - normalizedDepth; // 0 = zadaj, 1 = spredaj
 
-        // Dokazano delujoč SDF exp-upad — manj tesnjenja med plastmi kot prej
-        // (30→9000 je bilo zelo strogo za sprednje plasti/tla); glavno zaščito
-        // pred bleedom zdaj prevzame smerni gostotni modulator spodaj.
+        // Upadanje exponenta odvisnega od razdalje (sdf) je spredaj večje kot zadaj
         let k = mix(3000.0, 9000.0, closeness);
         let sdfAlpha = exp(-(sdfDist * sdfDist * k));
         let maxDist = mix(0.3, 0.3, closeness);
@@ -56,7 +54,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         } else {
             let baseAlpha = mix(0.7, 0.99, closeness);
 
-            // --- Smerna gostota: glavna zaščita pred bleedom na pravih robovih ---
+            // Smerna gostota: glavna zaščita pred bleedom na pravih robovih 
+            // (naredi bolj prosojne - TODO: poskusi dobit popolnoma brez bleeda
+            // brez da bi imeli luknje v redkih področjih)
             let sampleDist = i32(max(2.0, f32(size.x) * 0.1));
             let dC = textureLoad(densityTextures, index, i, 0).a;
             let dN = textureLoad(densityTextures, vec2<u32>(clampCoord(vec2<i32>(index) + vec2<i32>(0, -sampleDist), size)), i, 0).a;
@@ -69,12 +69,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             let directional = mix(directionalMin, directionalAvg, 0.6);
             let support = max(dC, directional);
 
-            // Širši razpon (0.3–1.0) kot prej — modulator zdaj nosi glavno
-            // odgovornost za "rob brez podpore v eni smeri = manj zaupanja".
             let confidenceModulator = mix(0.3, 1.0, clamp(support * 3.0, 0.0, 1.0));
             let confidence = mix(0.7, 1.0, confidenceModulator);
 
-            alpha = baseAlpha * sdfAlpha * confidence;
+            alpha = baseAlpha* sdfAlpha * confidence;
         }
 
         if (alpha < 0.005) {
