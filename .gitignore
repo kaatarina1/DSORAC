@@ -11,3 +11,5 @@ js/temp.js
 .idea
 segmentation
 *.json
+*.bin
+*.drc
