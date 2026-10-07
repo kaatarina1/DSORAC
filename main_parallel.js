@@ -1078,7 +1078,7 @@ async function captureImagesFromConfig(configJson) {
         for (const result of results) zip.file(`${modelName}/${result.metadata.filename}`, result.blob);
     }
     const blob = await zip.generateAsync({ type: "blob" });
-    saveAs(blob, configJson.outputZipName ?? "batchr_capture.zip");
+    saveAs(blob, configJson.outputZipName ?? "batch_capture_from_config.zip");
 }
 
 async function exportResults(capturedData) {

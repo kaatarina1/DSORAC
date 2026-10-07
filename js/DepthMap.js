@@ -184,7 +184,7 @@ export class DepthMap {
 		const minPointsPerBin = Math.max(1, Math.floor(totalPoints * minPointsFraction));
 
 		//const range = far - near;
-		const resolution = 500;
+		const resolution = 100;
 		const histogram = new Float32Array(resolution);
 
 		for (const d of linear) {
@@ -194,7 +194,7 @@ export class DepthMap {
 
 		// Smooth
 		const smoothed = new Float32Array(resolution);
-		const smoothRadius = 8;
+		const smoothRadius = 6;
 		for (let i = 0; i < resolution; i++) {
 			let sum = 0, count = 0;
 			for (let j = Math.max(0, i - smoothRadius); j < Math.min(resolution, i + smoothRadius); j++) {
@@ -238,7 +238,7 @@ export class DepthMap {
 			const mid = (bins[i - 1][1] + bins[i][0]) / 2;
 			const binWidth = bins[i][1] - bins[i][0];
 			const prevBinWidth = bins[i - 1][1] - bins[i - 1][0];
-			const overlap = Math.min(binWidth, prevBinWidth) * 0.1;
+			const overlap = Math.min(binWidth, prevBinWidth) * 0.10;
 			bins[i - 1][1] = mid + overlap;
 			bins[i][0] = mid - overlap;
 		}
