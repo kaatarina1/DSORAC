@@ -41,10 +41,6 @@ def readPointCloud(path):
     return xyz, rgb, bbMin, bbMax
 
 def generateDataset(path, out, alpha):
-    cmd = [
-        "conda", "activate", "pc_normals"
-    ]
-    # subprocess.run(cmd, check=True)
     positions, colors, bbMin, bbMax = readPointCloud(path)
 
     pos = positions
@@ -123,11 +119,8 @@ def generateDataset(path, out, alpha):
                 subprocess.run(cmd, check=True)
 def runGaussianSplattin(out):
     cmd = [
-        "conda", "activate", "gaussian_splatting"
-    ]
-    subprocess.run(cmd, check=True)
-    cmd = [
-        "python", "./gaussian_splatting/train.py", out
+        "conda", "run", "-n", "gaussian_splatting", "--no-capture-output",
+        "python", "./gaussian_splatting/train.py", "-s", out,
     ]
     subprocess.run(cmd, check=True)
 
