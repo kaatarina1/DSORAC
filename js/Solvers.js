@@ -1,3 +1,5 @@
+import { loadShader } from "./LoadShader.js";
+
 export class Solver {
 	constructor(canvas, device) {
 		this.canvas = canvas;
@@ -11,10 +13,7 @@ export class Solver {
 	}
 
 	async createJacobianPipeline() {
-		const jacobiaCode = await fetch("./shaders/jacobia.wgsl").then(
-			(response) => response.text()
-		);
-
+		const jacobiaCode = await loadShader("jacobia.wgsl");
 		const jacobiaModule = this.device.createShaderModule({
 			code: jacobiaCode,
 		});
@@ -31,9 +30,7 @@ export class Solver {
 	}
 
 	async createUpdateRedBlackPipeline() {
-		const updateRedBlackWGSL = await fetch(
-			"./shaders/updateRedBlack.wgsl"
-		).then((response) => response.text());
+		const updateRedBlackWGSL = await loadShader("updateRedBlack.wgsl");
 
 		const updateRedBlackModule = this.device.createShaderModule({
 			code: updateRedBlackWGSL,
@@ -51,9 +48,7 @@ export class Solver {
 	}
 
 	async createResidualPipeline() {
-		const residualCode = await fetch("./shaders/residual.wgsl").then(
-			(response) => response.text()
-		);
+		const residualCode = await loadShader("residual.wgsl");
 		const residualModule = this.device.createShaderModule({
 			code: residualCode,
 		});

@@ -1,3 +1,5 @@
+import { loadShader } from "./LoadShader.js";
+
 export class DepthMap {
 	constructor(canvas, device, viewMatrix, projectionViewMatrix, pointclouds, isSpherical = false) {
 		this.canvas = canvas;
@@ -42,7 +44,7 @@ export class DepthMap {
 	async initPipeline() {
 		if (this.computePipeline) return;
 
-		const computeCode = await fetch("./shaders/visiblePointDepth.wgsl").then(r => r.text());
+		const computeCode = await loadShader("visiblePointDepth.wgsl");
 		this.computeShader = this.device.createShaderModule({ code: computeCode });
 
 		this.computePipeline = this.device.createComputePipeline({

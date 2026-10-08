@@ -1,7 +1,14 @@
 import * as mat4 from "./js/_Mat4.js";
 import { PointerController } from "./js/PointerController.js";
 import { LasLoader } from "./js/LasLoader.js";
-import { CameraPosition } from "./js/CameraPosition.js";
+import { 
+    generateFibonacciHemisphereAroundCamera, 
+    writeCamerasTxt,
+    writeImagesTxt,
+    writePoints3DTxt,
+    computeCameraMatrix,
+    computeOrthoTopDownMatrix
+} from "./js/CameraPosition.js";
 import { RenderingControls } from "./js/RenderingControls.js";
 import { AdaptiveGrid } from "./js/AdaptiveGrid.js";
 import JSZip from "jszip";
@@ -9,6 +16,7 @@ import saveAs from "file-saver";
 
 import WorkerScript from './imageGenerationWorker.js?worker';
 import { SegmentationPipeline } from "./js/SegmentationPipeline.js";
+import { queueBlobDownload } from "./js/Utils.js";
 
 const CONFIG = {
     canvasWidth: 1024,
@@ -24,12 +32,12 @@ const CONFIG = {
     // hemisphereRadii: [170],
     // object model
     // hemisphereRadii: [1],
-    imagesPerCombination: 5, // 110
-    // lasFile: "./data/pc/ljubljana_1.las",
+    imagesPerCombination: 50, // 110
+    // lasFile: "./data/pc/ljubljana_1_normals_2.las",
     // lasFile: "./data/pc/ljubljana_2.las",
     // lasFile: "./data/pc/ljubljana_3.las",
     // lasFile: "./data/pc/ljubljanica_normals.las",
-    lasFile: "./data/pc/bezigrad_normals.las",
+    // lasFile: "./data/pc/bezigrad_normals.las",
     // lasFile: "./data/pc/fri_normals.las",
     // lasFile: "./data/pc/celje_normals.las",
     // lasFile: "./data/pc/Barn_normals.las",
@@ -40,11 +48,11 @@ const CONFIG = {
     // lasFile: "./data/pc/bezigrad_gpcc_normals.las",
     // lasFile: "./data/pc/lego_draco_normals.las",
     // lasFile: "./data/pc/lego_gpcc_normals.las",
-    // lasFile: "./data/pc/Ignatius_normals.las",
-    // lasFile: "./data/Lego856_PointCloud.las",
+    lasFile: "./data/pc/Ignatius_normals.las",
+    // tlasFile: "./data/pc/Lego856_PointCloud_v2.las",
     targetPositionsAndRadii: [
         // terrestrial
-        {radii: 100, pos: [0, 5, 0]},
+        // {radii: 60, pos: [0, 15, 0]},
         // {radii: 50, pos: [-20, 5, -10]},
         // {radii: 50, pos: [20, 5, -10]},
         // {radii: 50, pos: [-20, 5, 10]},
@@ -53,17 +61,17 @@ const CONFIG = {
         // {radii: 30, pos: [-8, 5, 2]},
         // {radii: 30, pos: [0, 5, -9]},
         // air borne
-        // {radii: 170, pos: [0, 5, 0]},
+        // {radii: 186, pos: [0, 35.3, 0]},
         // {radii: 170, pos: [50, 5, 50]},
         // {radii: 170, pos: [-50, 5, 50]},
         // {radii: 170, pos: [50, 5, -50]},
         // {radii: 170, pos: [-50, 5, -50]},
         // object model - lego 
-        // { radii: 80, pos: [0, 5, 0] },
+        // { radii: 49, pos: [0, 13, 0] },
         // object model - truck 
         // { radii: 10, pos: [0, 0.5, 0] },
         // object model - statue 
-        // { radii: 4, pos: [0, 1, 0] },
+        { radii: 2.8, pos: [0, 1.3, 0] },
         // object model - barn 
         // { radii: 20, pos: [0, 0, 0] },
     ]
@@ -188,12 +196,7 @@ class WorkerPool {
 
                         case 'SAVE_PNG': {
                             // Prenos PNG-ja, ki ga je worker poslal (debug)
-                            const url = URL.createObjectURL(e.data.blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = e.data.fileName;
-                            a.click();
-                            URL.revokeObjectURL(url);
+                            queueBlobDownload(e.data.blob, e.data.fileName);
                             break;
                         }
 
@@ -678,8 +681,6 @@ const globalSortPipeline = device.createComputePipeline({
     layout: "auto",
 });
 
-const camPositionHelper = new CameraPosition(canvas, device, renderingPipeline);
-
 // Matrix buffers: MVP (binding 0) + view matrix (binding 1) in group 1
 const mvpBuffer = device.createBuffer({
     size: 64,
@@ -874,7 +875,7 @@ async function generateImagesParallel() {
             // }
             // count++;
 
-            const poses = camPositionHelper.generateFibonacciHemisphereAroundCamera(
+            const poses = generateFibonacciHemisphereAroundCamera(
                 oversampledCount,
                 radius,
                 target
@@ -1089,9 +1090,9 @@ async function exportResults(capturedData) {
         return;
     }
     
-    zip.file("cameras.txt", camPositionHelper.writeCamerasTxt(capturedData));
-    zip.file("images.txt", camPositionHelper.writeImagesTxt(capturedData, scaleFactor));
-    zip.file("points3D.txt", camPositionHelper.writePoints3DTxt(positions, colorsRGB, scaleFactor));
+    zip.file("cameras.txt", writeCamerasTxt(capturedData));
+    zip.file("images.txt", writeImagesTxt(capturedData, scaleFactor));
+    zip.file("points3D.txt", writePoints3DTxt(positions, colorsRGB, scaleFactor));
 
     const blob = await zip.generateAsync({ type: "blob" });
     saveAs(blob, "export_bundle.zip");
@@ -1453,13 +1454,13 @@ function frame() {
     let viewMatrix, projectionViewMatrix;
 
     if (orthoMode) {
-        const result = camPositionHelper.computeOrthoTopDownMatrix(
+        const result = computeOrthoTopDownMatrix(
             orthoEyeY, orthoPanX, orthoPanZ, orthoZoom, canvas, bbMin, bbMax
         );
         viewMatrix           = result.viewMatrix;
         projectionViewMatrix = result.projectionViewMatrix;
     } else {
-        const result = camPositionHelper.computeCameraMatrix(
+        const result = computeCameraMatrix(
             cameraPosition, cameraTarget, canvas, bbMin, bbMax
         );
         viewMatrix           = result.viewMatrix;

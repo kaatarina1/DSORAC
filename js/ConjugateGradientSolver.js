@@ -1,5 +1,4 @@
-import { Solver } from "./Solvers";
-import { convertTexture } from "./Utils";
+import { loadShader } from "./LoadShader.js";
 
 export class ConjugateGradientSolver {
     constructor(canvas, device, iterations = 1000) {
@@ -24,7 +23,7 @@ export class ConjugateGradientSolver {
     }
 
     async createLaplacianPipeline() {
-        const laplacianCode = await fetch("shaders/laplacian.wgsl").then((res) => res.text());
+        const laplacianCode = await loadShader("laplacian.wgsl");
         const laplacianModule = this.device.createShaderModule({
             code: laplacianCode,
         });
@@ -38,7 +37,7 @@ export class ConjugateGradientSolver {
     }
 
     async createUpdatePipeline() {
-        const updateCode = await fetch("shaders/update.wgsl").then((res) => res.text());
+        const updateCode = await loadShader("update.wgsl");
         const updateModule = this.device.createShaderModule({
             code: updateCode,
         });
@@ -52,7 +51,7 @@ export class ConjugateGradientSolver {
     }
 
     async createResidualPipeline() {
-        const residualCode = await fetch("shaders/residual.wgsl").then((res) => res.text());
+        const residualCode = await loadShader("residual.wgsl");
         const residualModule = this.device.createShaderModule({
             code: residualCode,
         });
@@ -66,7 +65,7 @@ export class ConjugateGradientSolver {
     }
 
     async createDotProductPipeline() {
-        const dotProductCode = await fetch("shaders/dotProduct.wgsl").then((res) => res.text());
+        const dotProductCode = await loadShader("dotProduct.wgsl");
         const dotProductModule = this.device.createShaderModule({
             code: dotProductCode,
         });
@@ -179,7 +178,7 @@ export class ConjugateGradientSolver {
             await this.update(this.residualCurrent, this.cgTempDrawing, this.residualNext, negAlpha);
             
             const rrNew = await this.dotProduct(this.residualNext, this.residualNext);
-            let beta = rrNew.map((n, i) => n / rr[i]);
+            const beta = rrNew.map((n, i) => n / rr[i]);
             
             if (this.debug && i % 100 === 0) {
                 console.log(`Iteration ${i} - rrNew:`, rrNew);
@@ -459,7 +458,6 @@ export class ConjugateGradientSolver {
         const pointData = new DataView(arrayBuffer);
 
         let nonZeroCount = 0;
-        let totalPixels = this.width * this.height;
         let maxValue = 0;
 
         for (let i = 0; i < totalPixels; i++) {

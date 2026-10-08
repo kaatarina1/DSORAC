@@ -1,5 +1,4 @@
-import { constants } from "buffer";
-import { saveMaskToPNG, saveNormalizedTextureToPNG, saveSDFToPNG, saveTextureToPNG } from "./Utils";
+import { loadShader } from "./LoadShader.js";
 
 export class SignedDistanceFiled {
   constructor(device, texture, width, height, blurRadius = 4, blurSigma = 2.0, densityRadius = 30, densitySigma = 15.0) {
@@ -78,7 +77,7 @@ export class SignedDistanceFiled {
 
   async createClosedPipeline() {
     if (this.closedPipeline) return this.closedPipeline;
-    const closedCode = await fetch("shaders/isColored.wgsl").then(r => r.text());
+    const closedCode = await loadShader("isColored.wgsl");
     const module = this.device.createShaderModule({ code: closedCode });
     this.closedPipeline = this.device.createComputePipeline({ 
       layout: "auto", 
@@ -92,7 +91,7 @@ export class SignedDistanceFiled {
 
   async createInitCoordsPipeline() {
     if (this.initCoordsPipeline) return this.initCoordsPipeline;
-    const code = await fetch("shaders/initCoords.wgsl").then(r => r.text());
+    const code = await loadShader("initCoords.wgsl");
     const module = this.device.createShaderModule({ code });
     this.initCoordsPipeline = this.device.createComputePipeline({ 
       layout: "auto", 
@@ -106,7 +105,7 @@ export class SignedDistanceFiled {
 
   async createJfaPipeline() {
     if (this.jfaPipeline) return this.jfaPipeline;
-    const code = await fetch("shaders/jfaStep.wgsl").then(r => r.text());
+    const code = await loadShader("jfaStep.wgsl");
     const module = this.device.createShaderModule({ code });
     this.jfaPipeline = this.device.createComputePipeline({ 
       layout: "auto", 
@@ -120,7 +119,7 @@ export class SignedDistanceFiled {
 
   async createDistancePipeline() {
     if (this.distancePipeline) return this.distancePipeline;
-    const code = await fetch("shaders/jfaDistance.wgsl").then(r => r.text());
+    const code = await loadShader("jfaDistance.wgsl");
     const module = this.device.createShaderModule({ code });
     this.distancePipeline = this.device.createComputePipeline({ 
       layout: "auto", 
@@ -134,7 +133,7 @@ export class SignedDistanceFiled {
 
   async createBlurPipeline() {
     if (this.blurPipeline) return this.blurPipeline;
-    const code = await fetch("shaders/jfaBlur.wgsl").then(r => r.text());
+    const code = await loadShader("jfaBlur.wgsl");
     const module = this.device.createShaderModule({ code });
     this.blurPipeline = this.device.createComputePipeline({ 
       layout: "auto", 
@@ -243,7 +242,7 @@ export class SignedDistanceFiled {
     const jfaParams = this.getJfaParamsBuffer();
     const doJfaPass = (inputTex, outputTex, stepVal) => {
       const u32 = new Uint32Array([stepVal >>> 0, this.width >>> 0, this.height >>> 0, 0]);
-      this.device.queue.writeBuffer(jfaParams, 0, u32.buffer);
+      this.device.queue.writeBuffer(jfaParams, 0, u32);
       const bind = this.device.createBindGroup({ 
         layout: this.jfaPipeline.getBindGroupLayout(0), 
         entries: [ 
@@ -301,7 +300,7 @@ export class SignedDistanceFiled {
     const norm = 1.0 / Math.max(1.0, diag);
     const f32 = new Float32Array([norm, this.width, this.height, 0.0]);
     const distParams = this.getDistParamsBuffer();
-    this.device.queue.writeBuffer(distParams, 0, f32.buffer);
+    this.device.queue.writeBuffer(distParams, 0, f32);
 
     const distBind = this.device.createBindGroup({ 
       layout: this.distancePipeline.getBindGroupLayout(0), 
@@ -333,7 +332,7 @@ export class SignedDistanceFiled {
     const blurParams = this.getBlurParamsBuffer();
     const doBlurPass = (inputTex, outputTex, axisX, axisY) =>{
       const params = new Float32Array([this.blurSigma, this.blurRadius, axisX, axisY]);
-      this.device.queue.writeBuffer(blurParams, 0, params.buffer);
+      this.device.queue.writeBuffer(blurParams, 0, params);
       const blurBind = this.device.createBindGroup({ 
         layout: this.blurPipeline.getBindGroupLayout(0), 
         entries: [ 
@@ -365,7 +364,7 @@ export class SignedDistanceFiled {
     const densityParams = this.getDensityParamsBuffer();
     const doDensityBlurPass = (inputTex, outputTex, axisX, axisY) =>{
       const params = new Float32Array([this.densitySigma, this.densityRadius, axisX, axisY]);
-      this.device.queue.writeBuffer(densityParams, 0, params.buffer);
+      this.device.queue.writeBuffer(densityParams, 0, params);
       const densityBind = this.device.createBindGroup({ 
         layout: this.blurPipeline.getBindGroupLayout(0), 
         entries: [ 

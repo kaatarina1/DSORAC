@@ -1,5 +1,6 @@
-import { Solver } from "./Solvers";
-import { convertTexture } from "./Utils";
+import { loadShader } from "./LoadShader.js";
+import { Solver } from "./Solvers.js";
+import { convertTexture } from "./Utils.js";
 
 export class MultigridSolver {
 	constructor(canvas, device, levels = 10, nSmooth = 20, nSolve = 10) {
@@ -78,9 +79,7 @@ export class MultigridSolver {
 	}
 
 	async createRestrictionPipeline() {
-		const recrictionCode = await fetch("shaders/restriction.wgsl").then(
-			(res) => res.text()
-		);
+		const recrictionCode = await loadShader("shaders/restriction.wgsl");
 		const restrictionModule = this.device.createShaderModule({
 			code: recrictionCode,
 		});
@@ -94,9 +93,7 @@ export class MultigridSolver {
 	}
 
 	async createCorrectionPipeline() {
-		const correctionCode = await fetch("shaders/correction.wgsl").then(
-			(res) => res.text()
-		);
+		const correctionCode = await loadShader("shaders/correction.wgsl");
 		const correctionModule = this.device.createShaderModule({
 			code: correctionCode,
 		});
@@ -110,9 +107,7 @@ export class MultigridSolver {
 	}
 
 	async createResidualPipeline() {
-		const residualCode = await fetch("shaders/residual.wgsl").then((res) =>
-			res.text()
-		);
+		const residualCode = await loadShader("shaders/residual.wgsl");
 		const residualModule = this.device.createShaderModule({
 			code: residualCode,
 		});
@@ -342,8 +337,6 @@ export class MultigridSolver {
 	}
 
 	async restrict(level, sourceTexture, targetTexture, isBoundary) {
-		const sourceWidth = this.grid[level].width;
-		const sourceHeight = this.grid[level].height;
 		const targetWidth = this.grid[level + 1].width;
 		const targetHeight = this.grid[level + 1].height;
 

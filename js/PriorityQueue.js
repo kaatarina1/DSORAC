@@ -13,7 +13,7 @@ export class PriorityQueue {
     }
 
     enqueue(index, dx, dy, distance) {
-        let element = new QElement(index, dx, dy, distance);
+        const  element = new QElement(index, dx, dy, distance);
         let added = false;
 
         for (let i = 0; i < this.items.length; i++) {

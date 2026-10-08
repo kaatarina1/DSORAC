@@ -1,5 +1,5 @@
 import { createLazPerf } from "laz-perf";
-import { parseHeader } from "./Utils";
+import { parseHeader } from "./Utils.js";
 
 // LAS Point Data Record Format -> byte offset za RGB (null če ni barve)
 // https://laspy.readthedocs.io/en/latest/intro.html
@@ -49,10 +49,16 @@ export class LasLoader {
         const LazPerf = await createLazPerf({
             locateFile: (file) => `./node_modules/laz-perf/lib/laz-perf.wasm`,
         });
-        const response = await fetch(this.lasName);
-        const arrayBuffer = await response.arrayBuffer();
-        const file = new Uint8Array(arrayBuffer);
 
+        let file;
+        if (typeof Deno !== "undefined") {
+            file = await Deno.readFile(this.lasName);
+        } else {
+            const response = await fetch(this.lasName);
+            const arrayBuffer = await response.arrayBuffer();
+            file = new Uint8Array(arrayBuffer);
+        }
+        
         const header = parseHeader(file);
         const {
             pointDataRecordFormat,
@@ -82,6 +88,10 @@ export class LasLoader {
                     : '') +
                 `. Points will render white.`
             );
+        }
+
+        if (!hasNormals) {
+            console.warn("Loaded las file does not have normals! Rendering using 2D isotropic gaussians or disks won't work.");
         }
 
         const laszip = new LazPerf.LASZip();
@@ -145,10 +155,13 @@ export class LasLoader {
                 (0xff << 24);
             colors.set([packedColor >>> 0], i);
 
-            const nx = pointBuffer.getFloat32(normalOffset.x, true);
-            const nz = pointBuffer.getFloat32(normalOffset.z, true);
-            const ny = pointBuffer.getFloat32(normalOffset.y, true);
-            normals.set([nx, nz, ny], i * 3);
+            if (hasNormals) {
+                const nx = pointBuffer.getFloat32(normalOffset.x, true);
+                const nz = -pointBuffer.getFloat32(normalOffset.y, true);
+                const ny = pointBuffer.getFloat32(normalOffset.z, true);
+                normals.set([nx, nz, ny], i * 3);
+            }
+            
             classifications[i] = pointBuffer.getUint8(classOffset);
         }
 
@@ -165,6 +178,6 @@ export class LasLoader {
         LazPerf._free(dataPtr);
         laszip.delete();
 
-        return { positions, colors, colorsRGB, normals, classifications, scaleFactor };
+        return { positions, colors, colorsRGB, normals, classifications, scaleFactor, centerX, centerZ, minY };
     }
 }

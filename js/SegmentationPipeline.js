@@ -1,5 +1,6 @@
 import * as mat4 from "./_Mat4.js";
 import JSZip from "jszip";
+import { loadShader } from "./LoadShader.js";
 
 // PNG DECODER (16-bit grayscale, za segmentacijske maske)
 function paethPredictor(a, b, c) {
@@ -261,8 +262,8 @@ export class SegmentationPipeline {
         console.log(`N_CLASSES=${N_CLASSES}, votes buffer=${(numberOfAllPoints * N_CLASSES * 4 / 1024 / 1024).toFixed(0)} MB`);
 
         const [indexDiskCode, voteCode] = await Promise.all([
-            fetch('./shaders/indexDisk.wgsl').then(r => r.text()),
-            fetch('./shaders/vote.wgsl').then(r => r.text()),
+            loadShader('indexDisk.wgsl'),
+            loadShader('vote.wgsl'),
         ]);
 
         const indexDiskModule = device.createShaderModule({ code: indexDiskCode });
@@ -417,7 +418,7 @@ export class SegmentationPipeline {
         // Post-voting: določitev razredov
         controls.setSegmentationStatus(votingMode === 'spatial' ? 'Prostorsko glasovanje...' : 'Argmax...');
 
-        const applyCode = await fetch('./shaders/applySegmentation.wgsl').then(r => r.text());
+        const applyCode = await loadShader('applySegmentation.wgsl');
         const applyPipeline = device.createComputePipeline({
             compute: { module: device.createShaderModule({ code: applyCode }), entryPoint: 'apply' },
             layout: 'auto',
@@ -469,10 +470,10 @@ export class SegmentationPipeline {
             console.log(`Voxel grid: ${GRID_X}×${GRID_Y}×${GRID_Z} = ${N_VOXELS} voxels (${(N_VOXELS * N_CLASSES * 4 / 1024 / 1024).toFixed(0)} MB)`);
 
             const [topkCode, voxVoteCode, voxArgCode, spatRefCode] = await Promise.all([
-                fetch('./shaders/topkArgmax.wgsl').then(r => r.text()),
-                fetch('./shaders/voxelVote.wgsl').then(r => r.text()),
-                fetch('./shaders/voxelArgmax.wgsl').then(r => r.text()),
-                fetch('./shaders/spatialRefine.wgsl').then(r => r.text()),
+                loadShader('topkArgmax.wgsl'),
+                loadShader('voxelVote.wgsl'),
+                loadShader('voxelArgmax.wgsl'),
+                loadShader('spatialRefine.wgsl'),
             ]);
 
             const topkPipeline = device.createComputePipeline({
@@ -648,7 +649,7 @@ export class SegmentationPipeline {
 
         } else {
             // Enostavno glasovanje (argmax)
-            const argmaxCode = await fetch('./shaders/argmax.wgsl').then(r => r.text());
+            const argmaxCode = await loadShader('./shaders/argmax.wgsl');
             const argmaxPipeline = device.createComputePipeline({
                 compute: { module: device.createShaderModule({ code: argmaxCode }), entryPoint: 'argmax' },
                 layout: 'auto',

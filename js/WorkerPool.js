@@ -1,3 +1,5 @@
+import { queueBlobDownload } from "./Utils.js";
+
 // js/WorkerPool.js - Manages multiple workers for parallel image generation
 
 export class WorkerPool {
@@ -112,14 +114,7 @@ export class WorkerPool {
 
                         case 'SAVE_PNG': {
                             // Worker ne more sprožiti prenosa — to naredimo tukaj
-                            const url = URL.createObjectURL(e.data.blob);
-                            const a = document.createElement('a');
-                            a.href = url;
-                            a.download = e.data.fileName;
-                            document.body.appendChild(a);
-                            a.click();
-                            document.body.removeChild(a);
-                            URL.revokeObjectURL(url);
+                            queueBlobDownload(e.data.blob, e.data.fileName);
                             break;
                         }
 

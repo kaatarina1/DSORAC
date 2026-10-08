@@ -1,0 +1,1 @@
+export const loadShader = (name) => fetch(new URL(`../shaders/${name}`, import.meta.url)).then(r => r.text());

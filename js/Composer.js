@@ -1,16 +1,12 @@
-import { saveTextureToPNG } from "./Utils";
+import { loadShader } from "./LoadShader.js";
 
 export class Composer {
-	constructor(document, canvas, device, format) {
-        this.document = document;
-		this.canvas = canvas;
+	constructor(device, width, height, imageIndex = null) {
+        this.imageIndex = imageIndex;
 		this.device = device;
-		this.width = canvas.width;
-		this.height = canvas.height;
-        this.format = format;
+		this.width = width;
+		this.height = height;
 		
-        this.pipeline = this.createPipeline();
-
         this.depthPoints = [];
         this.reconstructions = [];
         this.sdfs = [];
@@ -18,13 +14,10 @@ export class Composer {
 		this.depths = [];
 
         this.backgroundTexture = null;
-        this.compositeResult = null;
 	}
 
     async createCompositePipeline() {
-		const compositeCode = await fetch("./shaders/composite.wgsl").then(
-			(response) => response.text()
-		);
+		const compositeCode = await loadShader("composite.wgsl");
 
 		const compositeModule = this.device.createShaderModule({
 			code: compositeCode,
@@ -41,237 +34,8 @@ export class Composer {
 		return compositePipeline;
 	}
 
-    createPipeline() {
-        const vertexShaderCode = `
-                        struct VertexOutput {
-                            @builtin(position) position: vec4f,
-                            @location(0) texCoord: vec2f,
-                        };
-                        
-                        @vertex
-                        fn main(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
-                            var pos = array<vec2f, 6>(
-                                vec2f(-1.0, -1.0),
-                                vec2f(1.0, -1.0),
-                                vec2f(-1.0, 1.0),
-                                vec2f(-1.0, 1.0),
-                                vec2f(1.0, -1.0),
-                                vec2f(1.0, 1.0)
-                            );
-                            
-                            var texCoord = array<vec2f, 6>(
-                                vec2f(0.0, 1.0),
-                                vec2f(1.0, 1.0),
-                                vec2f(0.0, 0.0),
-                                vec2f(0.0, 0.0),
-                                vec2f(1.0, 1.0),
-                                vec2f(1.0, 0.0)
-                            );
-                            
-                            var output: VertexOutput;
-                            output.position = vec4f(pos[vertexIndex], 0.0, 1.0);
-                            output.texCoord = texCoord[vertexIndex];
-                            return output;
-                        }
-                    `;
-        const fragmentShaderCode = `
-                        @group(0) @binding(0) var backgroundTex: texture_2d<f32>;
-                        @group(0) @binding(1) var foregroundTex: texture_2d<f32>;
-                        @group(0) @binding(2) var texSampler: sampler;
-                        
-                        @fragment
-                        fn main(@location(0) texCoord: vec2f) -> @location(0) vec4f {
-                            let background = textureSample(backgroundTex, texSampler, texCoord);
-                            let foreground = textureSample(foregroundTex, texSampler, texCoord);
-                            
-                            // Simple alpha blending: dst = src * srcAlpha + dst * (1 - srcAlpha)
-                            return vec4f(
-                                foreground.rgb * foreground.a + background.rgb * (1.0 - foreground.a),
-                                foreground.a + background.a * (1.0 - foreground.a)
-                            );
-                        }
-                    `;
-
-        return this.device.createRenderPipeline({
-            layout: 'auto',
-            vertex: {
-                module: this.device.createShaderModule({
-                    code: vertexShaderCode
-                }),
-                entryPoint: 'main'
-            },
-            fragment: {
-                module: this.device.createShaderModule({
-                    code: fragmentShaderCode
-                }),
-                entryPoint: 'main',
-                targets: [{
-                    format: this.format,
-                    blend: {
-                        color: {
-                            srcFactor: 'src-alpha',
-                            dstFactor: 'one-minus-src-alpha',
-                            operation: 'add'
-                        },
-                        alpha: {
-                            srcFactor: 'one',
-                            dstFactor: 'one-minus-src-alpha',
-                            operation: 'add'
-                        }
-                    }
-                }]
-            },
-            primitive: {
-                topology: 'triangle-list'
-            }
-        });
-    }
-
-    // Function to create an initial composite texture from the background
-    initializeCompositeTexture() {
-        if (!this.backgroundTexture) {
-            // Create a black background if no image is loaded
-            this.compositeResult = this.device.createTexture({
-                size: [this.width, this.height],
-                format: this.format,
-                usage: 
-                    GPUTextureUsage.TEXTURE_BINDING |
-                    GPUTextureUsage.COPY_DST |
-                    GPUTextureUsage.COPY_SRC |
-                    GPUTextureUsage.STORAGE_BINDING |
-                    GPUTextureUsage.RENDER_ATTACHMENT
-            });
-            
-            // Clear to black
-            const commandEncoder = this.device.createCommandEncoder();
-            const renderPass = commandEncoder.beginRenderPass({
-                colorAttachments: [{
-                    view: this.compositeResult.createView(),
-                    loadOp: "clear",
-                    clearValue: [0, 0, 0, 1], // Black background
-                    storeOp: "store"
-                }]
-            });
-            renderPass.end();
-            this.device.queue.submit([commandEncoder.finish()]);
-        } else {
-            // Copy the background to be the initial composite result
-            this.compositeResult = this.device.createTexture({
-                size: [this.width, this.height],
-                format: this.format,
-                usage: 
-                    GPUTextureUsage.TEXTURE_BINDING |
-                    GPUTextureUsage.COPY_DST |
-                    GPUTextureUsage.COPY_SRC |
-                    GPUTextureUsage.STORAGE_BINDING |
-                    GPUTextureUsage.RENDER_ATTACHMENT
-            });
-            
-            const commandEncoder = this.device.createCommandEncoder();
-            commandEncoder.copyTextureToTexture(
-                { texture: this.backgroundTexture },
-                { texture: this.compositeResult },
-                [this.width, this.height]
-            );
-            this.device.queue.submit([commandEncoder.finish()]);
-        }
-        
-        return this.compositeResult;
-    }
-
-    async compositeLayer(layerData) {
-        // Create a temporary texture for the new layer
-        const layerTexture = this.device.createTexture({
-            size: [this.width, this.height],
-            format: this.format,
-            usage: 
-                GPUTextureUsage.TEXTURE_BINDING |
-                GPUTextureUsage.COPY_DST |
-                GPUTextureUsage.STORAGE_BINDING |
-                GPUTextureUsage.RENDER_ATTACHMENT
-        });
-        
-        // Upload the layer data to the texture
-        this.device.queue.writeTexture(
-            { texture: layerTexture },
-            layerData,
-            { bytesPerRow: this.width * 4 },
-            [this.width, this.height]
-        );
-        
-        // Create a compute shader for alpha compositing
-        // This assumes you have a compute pipeline for compositing or you'll need to create one
-        // For simplicity, we'll use a render pass with blending enabled
-        
-        const tempTexture = this.device.createTexture({
-            size: [this.width, this.height],
-            format: this.format,
-            usage: 
-                GPUTextureUsage.TEXTURE_BINDING |
-                GPUTextureUsage.COPY_DST |
-                GPUTextureUsage.COPY_SRC |
-                GPUTextureUsage.RENDER_ATTACHMENT
-        });
-        
-        // Copy the current composite result to the temp texture
-        const copyEncoder = this.device.createCommandEncoder();
-        copyEncoder.copyTextureToTexture(
-            { texture: this.compositeResult },
-            { texture: tempTexture },
-            [this.width, this.height]
-        );
-        this.device.queue.submit([copyEncoder.finish()]);
-        
-        // Create sampler
-        const sampler = this.device.createSampler({
-            magFilter: 'linear',
-            minFilter: 'linear'
-        });
-        
-        // Create bind group for compositing
-        const compositeBindGroup = this.device.createBindGroup({
-            layout: this.pipeline.getBindGroupLayout(0),
-            entries: [
-                {
-                    binding: 0,
-                    resource: tempTexture.createView()
-                },
-                {
-                    binding: 1,
-                    resource: layerTexture.createView()
-                },
-                {
-                    binding: 2,
-                    resource: sampler
-                }
-            ]
-        });
-        
-        // Perform the compositing operation
-        const commandEncoder = this.device.createCommandEncoder();
-        const renderPass = commandEncoder.beginRenderPass({
-            colorAttachments: [{
-                view: this.compositeResult.createView(),
-                loadOp: 'clear',
-                clearValue: [0, 0, 0, 0],
-                storeOp: 'store'
-            }]
-        });
-        
-        renderPass.setPipeline(this.pipeline);
-        renderPass.setBindGroup(0, compositeBindGroup);
-        renderPass.draw(6);  // Draw a quad
-        renderPass.end();
-        
-        this.device.queue.submit([commandEncoder.finish()]);
-        
-        // Clean up temporary resources
-        layerTexture.destroy();
-        tempTexture.destroy();
-    }
-
     // Function to load a background image
-    async loadBackgroundImage(imageUrl) {
+    loadBackgroundImage(imageUrl) {
         return new Promise((resolve, reject) => {
             const img = new Image();
             img.onload = () => {

@@ -1,4 +1,5 @@
 import { Buffer } from "buffer";
+import { loadShader } from "./LoadShader.js";
 
 export function parseHeader(fileInput) {
 	const file = Buffer.from(fileInput);
@@ -42,9 +43,47 @@ export function parseHeader(fileInput) {
 	};
 }
 
-export async function saveTextureToPNG(imageData, width, height, fileName) {
-	// Step 4: Create a canvas and draw the image data
-	const canvas = document.createElement("canvas");
+/**
+ * Brskalnik zavrne del prenosov, če jih sprožimo v hitrem zaporedju (in
+ * URL.revokeObjectURL takoj po click() lahko prenos prekine), zato prenose
+ * serializiramo in objektni URL sprostimo šele po zamiku.
+ */
+let downloadQueue = Promise.resolve();
+
+export function queueBlobDownload(blob, fileName) {
+	downloadQueue = downloadQueue.then(async () => {
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement("a");
+		a.href = url;
+		a.download = fileName;
+		a.style.display = "none";
+		document.body.appendChild(a);
+		a.click();
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	});
+	return downloadQueue;
+}
+
+/**
+ * Shrani teksturo kot PNG. Dela tudi v workerju (OffscreenCanvas + postMessage).
+ *
+ * `scale` pretvori vrednosti v 0..255: rgba32float podatki so tipično v 0..1,
+ * zato se privzeto pomnožijo z 255, Uint8 podatki pa ostanejo nespremenjeni.
+ */
+export async function saveTextureToPNG(
+	imageData,
+	width,
+	height,
+	fileName,
+	{ scale = imageData instanceof Float32Array ? 255 : 1 } = {}
+) {
+	// V workerju ni document — uporabimo OffscreenCanvas
+	const inWorker = typeof document === "undefined";
+	const canvas = inWorker
+		? new OffscreenCanvas(width, height)
+		: document.createElement("canvas");
 	canvas.width = width;
 	canvas.height = height;
 	const ctx = canvas.getContext("2d");
@@ -53,21 +92,25 @@ export async function saveTextureToPNG(imageData, width, height, fileName) {
 	// Copy the pixel data to the ImageData object
 	for (let i = 0; i < imageData.length; i += 4) {
 		// BGRA to RGBA
-		imageDataObj.data[i] = imageData[i];
-		imageDataObj.data[i + 1] = imageData[i + 1];
-		imageDataObj.data[i + 2] = imageData[i + 2];
-		imageDataObj.data[i + 3] = imageData[i + 3];
+		imageDataObj.data[i] = imageData[i] * scale;
+		imageDataObj.data[i + 1] = imageData[i + 1] * scale;
+		imageDataObj.data[i + 2] = imageData[i + 2] * scale;
+		imageDataObj.data[i + 3] = imageData[i + 3] * scale;
 	}
 	ctx.putImageData(imageDataObj, 0, 0);
 
+	if (inWorker) {
+		// Worker ne more sprožiti prenosa — blob pošljemo glavni niti
+		const blob = await canvas.convertToBlob({ type: "image/png" });
+		self.postMessage({ type: "SAVE_PNG", blob, fileName });
+		return;
+	}
+
 	// Step 5: Convert canvas content to PNG and trigger download
-	const dataURL = canvas.toDataURL("image/png");
-	const a = document.createElement("a");
-	a.href = dataURL;
-	a.download = fileName;
-	document.body.appendChild(a);
-	a.click();
-	document.body.removeChild(a);
+	const blob = await new Promise((resolve) =>
+		canvas.toBlob(resolve, "image/png")
+	);
+	await queueBlobDownload(blob, fileName);
 }
 
 export async function saveNormalizedTextureToPNG(imageData, width, height, fileName) {
@@ -190,7 +233,7 @@ export async function saveMaskToPNG(textureData, width, height, fileName) {
 }
 
 async function createConversionPipeline(device) {
-    const convertCode = await fetch("./shaders/convert.wgsl").then((res) => res.text());
+    const convertCode = await loadShader("convert.wgsl");
     const convertModule = device.createShaderModule({ code: convertCode });
     return device.createComputePipeline({
         compute: { module: convertModule, entryPoint: "main" },
