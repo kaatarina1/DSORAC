@@ -1,0 +1,9 @@
+{
+    "nodeModulesDir": "manual",
+    "imports": {
+        "buffer": "node:buffer"
+    },
+    "tasks": {
+        "capture": "deno run -A capture.js"
+    }
+}
